@@ -16,6 +16,26 @@ redacted from `Debug` output.
 Inbound webhook parsing/signature verification and any higher-level provider
 trait adapter are intentionally outside this crate.
 
+## Observability
+
+The crate instruments outbound Twilio calls with `tracing` spans and events, but
+does not install a subscriber or exporter. Applications decide whether those
+events go to logs, OpenTelemetry, tests, or nowhere.
+
+Each request runs inside a `twilio2.request` span with the operation name and HTTP
+method. Events include request phase, response status code, decoded message
+status/direction, message-count pagination metadata, and error status/body
+lengths. They intentionally do not include auth tokens, `Authorization` headers,
+full URLs, phone numbers, SMS bodies, message SIDs, account SIDs, or
+`next_page_uri` values.
+
+Transport/decode/API diagnostics are sanitized before being logged or stored in
+`TwilioError`: known auth-token values are removed, Basic/Bearer credentials are
+redacted, and token/password/secret/API-key/body/to/from key-value fields are
+replaced with `<redacted>`. `Debug` output for returned message/page structs also
+redacts SMS bodies, message SIDs, and next-page URIs to reduce accidental
+application log leaks.
+
 ## Example
 
 ```rust,no_run

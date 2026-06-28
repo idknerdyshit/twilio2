@@ -1,0 +1,31 @@
+[package]
+name = "twilio2"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A small reqwest client for Twilio Programmable Messaging."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/idknerdyshit/twilio2"
+readme = "README.md"
+keywords = ["twilio", "sms", "messaging"]
+categories = ["api-bindings", "web-programming::http-client"]
+
+[dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "form", "rustls-no-provider"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+time = { version = "0.3", features = ["parsing"] }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+panic = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+todo = "warn"
+unimplemented = "warn"
+unwrap_used = "warn"

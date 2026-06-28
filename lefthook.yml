@@ -1,0 +1,6 @@
+pre-push:
+  commands:
+    cargo-fmt:
+      run: cargo fmt --check
+    cargo-clippy:
+      run: cargo clippy --all-targets -- -D warnings

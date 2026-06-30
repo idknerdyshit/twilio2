@@ -7,15 +7,35 @@ description = "A small reqwest client for Twilio Programmable Messaging."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/idknerdyshit/twilio2"
 readme = "README.md"
+include = [
+    "CHANGELOG.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "README.md",
+    "src/**",
+]
 keywords = ["twilio", "sms", "messaging"]
 categories = ["api-bindings", "web-programming::http-client"]
 
+[features]
+default = ["rustls"]
+rustls = ["reqwest/rustls"]
+native-tls = ["reqwest/native-tls"]
+rustls-no-provider = ["reqwest/rustls-no-provider"]
+
 [dependencies]
-reqwest = { version = "0.13", default-features = false, features = ["json", "query", "form", "rustls-no-provider"] }
+reqwest = { version = "0.13", default-features = false, features = ["form"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 time = { version = "0.3", features = ["parsing"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
+rustls = "0.23"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }
+tokio-rustls = "0.26"
 
 [lints.rust]
 unsafe_code = "deny"

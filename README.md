@@ -8,13 +8,44 @@ It covers the low-level message operations needed by SMS provider adapters:
 - create a message
 - fetch a message by SID
 - list messages by `To`/`From` with pagination
+- continue a list response from Twilio's `next_page_uri`
 
 The client stores only a shared `reqwest::Client` and base URL. Account SID and
 auth token values are passed per request through `TwilioCreds`; the auth token is
 redacted from `Debug` output.
 
+Custom base URLs must use HTTPS.
+
 Inbound webhook parsing/signature verification and any higher-level provider
 trait adapter are intentionally outside this crate.
+
+## Setup
+
+`twilio2` accepts an injected `reqwest::Client` and enables `reqwest`'s rustls
+backend by default so HTTPS works out of the box. Add `reqwest` directly if your
+application builds the client:
+
+```toml
+[dependencies]
+twilio2 = "0.1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+```
+
+To use a different TLS backend, disable default features and choose one
+explicitly:
+
+```toml
+[dependencies]
+twilio2 = { version = "0.1", default-features = false, features = ["native-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+```
+
+The `rustls-no-provider` feature is also available for applications that install
+their own rustls crypto provider before constructing `reqwest::Client`.
+
+Cargo features are additive. If you enable `native-tls` or `rustls-no-provider`
+without disabling default features, Cargo will also compile the default `rustls`
+backend.
 
 ## Observability
 

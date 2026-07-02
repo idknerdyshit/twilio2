@@ -1277,12 +1277,12 @@ impl TwilioClient {
                 self.page_uri_url(next_page_uri, creds.account_sid, PageResource::Messages)?;
             let resp = self
                 .http
-                .get(url)
+                .get(url.clone())
                 .basic_auth(creds.account_sid, Some(creds.auth_token))
                 .send()
                 .await
                 .map_err(|e| transport_error(&e, &sensitive_values))?;
-            self.read_message_page(resp, &sensitive_values, None, creds.account_sid)
+            self.read_message_page(resp, &sensitive_values, Some(&url), creds.account_sid)
                 .await
         }
         .instrument(request_span(
@@ -1464,12 +1464,12 @@ impl TwilioClient {
             let url = self.page_uri_url(next_page_uri, creds.account_sid, PageResource::Media)?;
             let resp = self
                 .http
-                .get(url)
+                .get(url.clone())
                 .basic_auth(creds.account_sid, Some(creds.auth_token))
                 .send()
                 .await
                 .map_err(|e| transport_error(&e, &sensitive_values))?;
-            self.read_media_page(resp, &sensitive_values, None, creds.account_sid)
+            self.read_media_page(resp, &sensitive_values, Some(&url), creds.account_sid)
                 .await
         }
         .instrument(request_span(&self.base_url, "list_media_page_uri", "GET"))
@@ -1558,7 +1558,7 @@ impl TwilioClient {
         if let Some(next_page_uri) = page.next_page_uri.as_ref() {
             let next_url = self.page_uri_url(next_page_uri, account_sid, PageResource::Messages)?;
             if let Some(current_url) = current_url {
-                validate_next_page_query(current_url, &next_url, PageResource::Messages)?;
+                validate_next_page_continuation(current_url, &next_url, PageResource::Messages)?;
             }
         }
         Ok(page)
@@ -1576,7 +1576,7 @@ impl TwilioClient {
         if let Some(next_page_uri) = page.next_page_uri.as_ref() {
             let next_url = self.page_uri_url(next_page_uri, account_sid, PageResource::Media)?;
             if let Some(current_url) = current_url {
-                validate_next_page_query(current_url, &next_url, PageResource::Media)?;
+                validate_next_page_continuation(current_url, &next_url, PageResource::Media)?;
             }
         }
         Ok(page)
@@ -1973,11 +1973,16 @@ fn allowed_page_query_key(key: &str, resource: PageResource) -> bool {
     }
 }
 
-fn validate_next_page_query(
+fn validate_next_page_continuation(
     current_url: &Url,
     next_url: &Url,
     resource: PageResource,
 ) -> Result<(), TwilioError> {
+    if current_url.path() != next_url.path() {
+        return Err(TwilioError::InvalidResponseMetadata(
+            "next_page_uri changed resource path".to_owned(),
+        ));
+    }
     for key in stable_page_query_keys(resource) {
         if query_values(current_url, key) != query_values(next_url, key) {
             return Err(TwilioError::InvalidResponseMetadata(format!(
@@ -2902,6 +2907,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_media_rejects_next_page_uri_for_different_message() {
+        let server = HttpsMockServer::start(vec![MockResponse::json(
+            r#"{
+                "media_list": [],
+                "next_page_uri": "/2010-04-01/Accounts/AC123/Messages/SM999/Media.json?Page=1"
+            }"#,
+        )])
+        .await;
+        let client = super::TwilioClient::try_new(test_http_client(), &server.base_url).unwrap();
+
+        let err = client
+            .list_media(test_creds(), ListMediaRequest::new("SM123"))
+            .await
+            .expect_err("cross-message media pagination should be rejected");
+
+        assert!(matches!(err, TwilioError::InvalidResponseMetadata(_)));
+    }
+
+    #[tokio::test]
     async fn create_feedback_sends_outcome() {
         let server = HttpsMockServer::start(vec![MockResponse::json(
             r#"{"account_sid":"AC123","message_sid":"SM123","outcome":"confirmed","date_created":"Fri, 24 May 2019 17:44:46 +0000","uri":"/feedback"}"#,
@@ -3163,7 +3187,7 @@ mod tests {
     }
 
     #[test]
-    fn next_page_query_preserves_stable_filters_only_when_current_url_is_known() {
+    fn next_page_continuation_preserves_stable_filters_and_resource_path() {
         let base_url = normalize_base_url("https://api.twilio.com/proxy").unwrap();
         let current_url = page_uri_url_from_base(
             &base_url,
@@ -3180,7 +3204,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            super::validate_next_page_query(&current_url, &next_url, PageResource::Messages)
+            super::validate_next_page_continuation(&current_url, &next_url, PageResource::Messages)
                 .is_ok()
         );
         let changed = page_uri_url_from_base(
@@ -3191,7 +3215,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            super::validate_next_page_query(&current_url, &changed, PageResource::Messages)
+            super::validate_next_page_continuation(&current_url, &changed, PageResource::Messages)
                 .is_err()
         );
 
@@ -3209,15 +3233,6 @@ mod tests {
             PageResource::Media,
         )
         .unwrap();
-        assert!(
-            super::validate_next_page_query(
-                &current_media_url,
-                &next_media_url,
-                PageResource::Media
-            )
-            .is_ok()
-        );
-
         let changed_media_url = page_uri_url_from_base(
             &base_url,
             "/2010-04-01/Accounts/AC123/Messages/SM123/Media.json?DateCreated=2026-07-01&DateCreated%3C=2026-07-31&DateCreated%3E=2026-06-02&PageSize=50&Page=1&PageToken=abc",
@@ -3226,7 +3241,32 @@ mod tests {
         )
         .unwrap();
         assert!(
-            super::validate_next_page_query(
+            super::validate_next_page_continuation(
+                &current_media_url,
+                &next_media_url,
+                PageResource::Media
+            )
+            .is_ok()
+        );
+
+        let changed_media_path = page_uri_url_from_base(
+            &base_url,
+            "/2010-04-01/Accounts/AC123/Messages/SM999/Media.json?DateCreated=2026-07-01&DateCreated%3C=2026-07-31&DateCreated%3E=2026-06-01&PageSize=50&Page=1&PageToken=abc",
+            "AC123",
+            PageResource::Media,
+        )
+        .unwrap();
+        assert!(
+            super::validate_next_page_continuation(
+                &current_media_url,
+                &changed_media_path,
+                PageResource::Media
+            )
+            .is_err()
+        );
+
+        assert!(
+            super::validate_next_page_continuation(
                 &current_media_url,
                 &changed_media_url,
                 PageResource::Media

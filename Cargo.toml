@@ -44,6 +44,7 @@ unsafe_code = "deny"
 dbg_macro = "deny"
 missing_errors_doc = "warn"
 missing_panics_doc = "warn"
+pedantic = { level = "deny", priority = -1 }
 panic = "warn"
 print_stderr = "warn"
 print_stdout = "warn"

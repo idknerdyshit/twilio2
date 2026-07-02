@@ -256,6 +256,7 @@ pub struct CreateMessageRequest<'a> {
 }
 
 impl<'a> CreateMessageRequest<'a> {
+    #[must_use]
     pub fn new(to: &'a str) -> Self {
         Self {
             to,
@@ -394,6 +395,7 @@ pub struct ListMessagesRequest<'a> {
 }
 
 impl<'a> ListMessagesRequest<'a> {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -454,6 +456,7 @@ pub struct UpdateMessageRequest<'a> {
 }
 
 impl<'a> UpdateMessageRequest<'a> {
+    #[must_use]
     pub fn new(sid: &'a str) -> Self {
         Self {
             sid,
@@ -462,6 +465,7 @@ impl<'a> UpdateMessageRequest<'a> {
         }
     }
 
+    #[must_use]
     pub fn redact_body(sid: &'a str) -> Self {
         Self {
             sid,
@@ -470,6 +474,7 @@ impl<'a> UpdateMessageRequest<'a> {
         }
     }
 
+    #[must_use]
     pub fn cancel(sid: &'a str) -> Self {
         Self {
             sid,
@@ -516,6 +521,7 @@ pub struct ListMediaRequest<'a> {
 }
 
 impl<'a> ListMediaRequest<'a> {
+    #[must_use]
     pub fn new(message_sid: &'a str) -> Self {
         Self {
             message_sid,
@@ -579,6 +585,7 @@ pub struct CreateMessageFeedbackRequest<'a> {
 }
 
 impl<'a> CreateMessageFeedbackRequest<'a> {
+    #[must_use]
     pub fn new(message_sid: &'a str, outcome: MessageFeedbackOutcome) -> Self {
         Self {
             message_sid,
@@ -1152,7 +1159,10 @@ impl TwilioClient {
     ) -> Result<Self, TwilioError> {
         Ok(Self {
             http,
-            base_url: normalize_base_url(base_url.into()).map_err(TwilioError::InvalidBaseUrl)?,
+            base_url: {
+                let base_url = base_url.into();
+                normalize_base_url(&base_url).map_err(TwilioError::InvalidBaseUrl)?
+            },
         })
     }
 
@@ -1766,7 +1776,7 @@ enum PageResource {
     Media,
 }
 
-fn normalize_base_url(raw: String) -> Result<Url, String> {
+fn normalize_base_url(raw: &str) -> Result<Url, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err("base URL is empty".to_owned());
@@ -1800,7 +1810,7 @@ fn endpoint_url_from_base(base_url: &Url, segments: &[&str]) -> Result<Url, Twil
     {
         let mut path = url
             .path_segments_mut()
-            .map_err(|_| TwilioError::InvalidBaseUrl("base URL cannot be a base".to_owned()))?;
+            .map_err(|()| TwilioError::InvalidBaseUrl("base URL cannot be a base".to_owned()))?;
         path.pop_if_empty();
         path.extend(segments);
     }
@@ -1838,9 +1848,9 @@ fn page_uri_url_from_base(
             .split_once('?')
             .map_or((path_and_query, None), |(path, query)| (path, Some(query)));
         {
-            let mut path = url
-                .path_segments_mut()
-                .map_err(|_| TwilioError::InvalidBaseUrl("base URL cannot be a base".to_owned()))?;
+            let mut path = url.path_segments_mut().map_err(|()| {
+                TwilioError::InvalidBaseUrl("base URL cannot be a base".to_owned())
+            })?;
             path.clear();
             path.extend(base_prefix.iter().map(String::as_str));
             path.extend(path_part.split('/').filter(|segment| !segment.is_empty()));
@@ -2014,6 +2024,10 @@ fn redacted_str(value: &str) -> &str {
     if value.is_empty() { "" } else { REDACTED }
 }
 
+#[allow(
+    clippy::ref_option,
+    reason = "Debug impls pass struct fields directly; Option<&str> would move the noise to every call site."
+)]
 fn redacted_option(value: &Option<String>) -> Option<&str> {
     value.as_deref().map(redacted_str)
 }
@@ -2089,7 +2103,7 @@ fn redact_sensitive_key_values(s: &str) -> String {
             }
 
             let sep = s[cursor..].chars().next();
-            if matches!(sep, Some('=') | Some(':')) && is_sensitive_key(&s[key_start..key_end]) {
+            if matches!(sep, Some('=' | ':')) && is_sensitive_key(&s[key_start..key_end]) {
                 let sensitive_key = normalized_key(&s[key_start..key_end]);
                 cursor += sep.map_or(0, char::len_utf8);
                 while cursor < s.len() {
@@ -2268,7 +2282,7 @@ fn is_sensitive_key(key: &str) -> bool {
 fn normalized_key(key: &str) -> String {
     key.to_ascii_lowercase()
         .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
+        .filter(char::is_ascii_alphanumeric)
         .collect()
 }
 
@@ -2537,8 +2551,7 @@ mod tests {
         let content_length = headers
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-            .map(|(_, value)| value.parse::<usize>().unwrap())
-            .unwrap_or(0);
+            .map_or(0, |(_, value)| value.parse::<usize>().unwrap());
         let mut body = raw[header_end + 4..].to_vec();
         while body.len() < content_length {
             let n = stream.read(&mut chunk).await?;
@@ -3055,10 +3068,10 @@ mod tests {
 
     #[test]
     fn normalizes_and_rejects_base_urls() {
-        let url = normalize_base_url(" https://api.twilio.com/ ".to_owned()).unwrap();
+        let url = normalize_base_url(" https://api.twilio.com/ ").unwrap();
         assert_eq!(url.as_str(), "https://api.twilio.com/");
 
-        let url = normalize_base_url("https://api.twilio.com/proxy".to_owned()).unwrap();
+        let url = normalize_base_url("https://api.twilio.com/proxy").unwrap();
         assert_eq!(url.as_str(), "https://api.twilio.com/proxy/");
 
         for bad in [
@@ -3070,7 +3083,7 @@ mod tests {
             "https://api.twilio.com#frag",
         ] {
             assert!(
-                normalize_base_url(bad.to_owned()).is_err(),
+                normalize_base_url(bad).is_err(),
                 "accepted bad base URL {bad:?}"
             );
         }
@@ -3078,7 +3091,7 @@ mod tests {
 
     #[test]
     fn url_join_and_page_uri_validation_cover_messages_and_media() {
-        let base_url = normalize_base_url("https://api.twilio.com/proxy".to_owned()).unwrap();
+        let base_url = normalize_base_url("https://api.twilio.com/proxy").unwrap();
         assert_eq!(
             endpoint_url_from_base(
                 &base_url,
@@ -3151,7 +3164,7 @@ mod tests {
 
     #[test]
     fn next_page_query_preserves_stable_filters_only_when_current_url_is_known() {
-        let base_url = normalize_base_url("https://api.twilio.com/proxy".to_owned()).unwrap();
+        let base_url = normalize_base_url("https://api.twilio.com/proxy").unwrap();
         let current_url = page_uri_url_from_base(
             &base_url,
             "/2010-04-01/Accounts/AC123/Messages.json?To=%2B15551234567&DateSent%3E=2026-07-01&PageSize=50&Page=0",

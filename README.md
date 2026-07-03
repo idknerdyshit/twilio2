@@ -30,7 +30,7 @@ HTTPS works out of the box:
 
 ```toml
 [dependencies]
-twilio2 = "0.3"
+twilio2 = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 ```
 
@@ -39,7 +39,7 @@ explicitly:
 
 ```toml
 [dependencies]
-twilio2 = { version = "0.3", default-features = false, features = ["native-tls"] }
+twilio2 = { version = "0.2", default-features = false, features = ["native-tls"] }
 reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
 ```
 
@@ -52,9 +52,11 @@ backend.
 
 ## API Shape
 
-Version `0.3` is intentionally breaking. The flat `TwilioClient::try_new` and
-`client.create_message(...)` style methods were replaced with account/resource
-builders. `TwilioClient` never stores credentials:
+Version `0.2` uses account/resource builders throughout. Construct a client with
+`TwilioClient::from_config`, `TwilioClient::from_http_client`, or
+`TwilioClient::try_with_config`, then call resource methods such as
+`client.account(creds).messages().create(...)`. `TwilioClient` never stores
+credentials:
 
 ```rust,no_run
 use twilio2::{CreateMessageRequest, ListMessagesRequest, TwilioClient, TwilioCreds};

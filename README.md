@@ -1,32 +1,36 @@
 # twilio2
 
-`twilio2` is a small `reqwest` client for Twilio Programmable Messaging's
-Messages REST API.
+`twilio2` is a small `reqwest` client for Twilio Programmable Messaging.
 
-It covers the Messages resource and its Message subresources:
+It covers:
 
-- create, fetch, list, update/redact/cancel, and delete messages
-- follow Twilio `next_page_uri` pagination for messages and media
-- fetch Media metadata, download Media bytes, list Media, and delete Media
-- create Message Feedback
+- Messages: create, fetch, list, update/redact/cancel, and delete
+- Message Media: fetch metadata, download bytes, list, pagination, and delete
+- Message Feedback creation
+- Messaging Services: create, fetch, list, update, pagination, and delete
+- Service sender subresources: PhoneNumbers, ShortCodes, AlphaSenders,
+  ChannelSenders, and DestinationAlphaSenders
 
-The client stores only a shared `reqwest::Client` and base URL. Account SID and
-Auth Token values are passed per request through `TwilioCreds`; the auth token is
-redacted from `Debug` output. API-key authentication, inbound webhook parsing,
-signature verification, and higher-level provider traits are intentionally
-outside this crate.
+The client stores only a shared `reqwest::Client` and parsed base URLs. Account
+SID and Auth Token values are passed through `TwilioCreds` to an account-scoped
+handle; the auth token is redacted from `Debug` output. API-key authentication,
+inbound webhook parsing, signature verification, A2P Compliance resources, and
+higher-level provider traits are intentionally outside this crate.
 
-Custom base URLs must use HTTPS.
+Custom base URLs must use HTTPS. If a custom proxy is used for Messaging v1
+pagination, it must rewrite Twilio's absolute `next_page_url` values to the
+configured proxy origin or pagination will be rejected.
 
 ## Setup
 
-`twilio2` accepts an injected `reqwest::Client` and enables `reqwest`'s rustls
-backend by default so HTTPS works out of the box. Add `reqwest` directly if your
-application builds the client:
+`twilio2` can build its own pooled `reqwest::Client` from `TwilioClientConfig`,
+or accept an injected `reqwest::Client` when your application already owns
+transport setup. The crate enables `reqwest`'s rustls backend by default so
+HTTPS works out of the box:
 
 ```toml
 [dependencies]
-twilio2 = "0.2"
+twilio2 = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 ```
 
@@ -35,7 +39,7 @@ explicitly:
 
 ```toml
 [dependencies]
-twilio2 = { version = "0.2", default-features = false, features = ["native-tls"] }
+twilio2 = { version = "0.3", default-features = false, features = ["native-tls"] }
 reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
 ```
 
@@ -48,37 +52,95 @@ backend.
 
 ## API Shape
 
-Version `0.2` is intentionally breaking. Message creation and listing use
-borrowed request structs instead of the old positional convenience methods:
+Version `0.3` is intentionally breaking. The flat `TwilioClient::try_new` and
+`client.create_message(...)` style methods were replaced with account/resource
+builders. `TwilioClient` never stores credentials:
 
 ```rust,no_run
-use twilio2::{
-    CreateMessageRequest, DEFAULT_BASE_URL, TwilioClient, TwilioCreds,
-};
+use twilio2::{CreateMessageRequest, ListMessagesRequest, TwilioClient, TwilioCreds};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-let client = TwilioClient::try_new(reqwest::Client::new(), DEFAULT_BASE_URL)?;
+let client = TwilioClient::from_config(Default::default())?;
 let creds = TwilioCreds {
     account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     auth_token: "secret",
 };
 
-let mut request = CreateMessageRequest::new("+15551234567");
-request.from = Some("+15557654321");
-request.body = Some("hello");
+let request = CreateMessageRequest::new("+15551234567")
+    .from("+15557654321")
+    .body("hello");
 
-let message = client.create_message(creds, request).await?;
+let message = client.account(creds).messages().create(request).await?;
+let all = client
+    .account(creds)
+    .messages()
+    .list_all_with(ListMessagesRequest::new().page_size(50))
+    .collect_all()
+    .await?;
 
 if let Some(sid) = message.sid {
     println!("{sid}");
 }
+# let _ = all;
 # Ok(())
 # }
 ```
 
-For media downloads, `fetch_media` calls Twilio's `.json` Media endpoint and
-`download_media` calls the extensionless Media endpoint, returning
-`TwilioMediaContent { content_type, bytes }`.
+Messaging Services use Twilio's Messaging v1 API:
+
+```rust,no_run
+use twilio2::{CreateServiceRequest, HttpMethod, TwilioClient, TwilioCreds};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# let client = TwilioClient::from_config(Default::default())?;
+# let creds = TwilioCreds { account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", auth_token: "secret" };
+let service = client
+    .account(creds)
+    .services()
+    .create(
+        CreateServiceRequest::new("alerts")
+            .inbound_request_url("https://example.com/inbound")
+            .inbound_method(HttpMethod::Post),
+    )
+    .await?;
+# let _ = service;
+# Ok(())
+# }
+```
+
+For media downloads, `message(...).media().fetch(...)` calls Twilio's `.json`
+Media endpoint and `message(...).media().download(...)` calls the extensionless
+Media endpoint, returning `TwilioMediaContent { content_type, bytes }`.
+
+## Custom Base URLs
+
+Use `TwilioClientConfig` when tests or proxies need custom endpoints:
+
+```rust,no_run
+use twilio2::{TwilioClient, TwilioClientConfig};
+
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let config = TwilioClientConfig::new()
+    .rest_base_url("https://proxy.example.com/twilio-rest")
+    .messaging_base_url("https://proxy.example.com/twilio-messaging/v1");
+let client = TwilioClient::from_config_and_http_client(config, reqwest::Client::new())?;
+# let _ = client;
+# Ok(())
+# }
+```
+
+`TwilioClient::new(reqwest::Client)` and
+`TwilioClient::try_with_config(reqwest::Client, TwilioConfig)` remain available
+as compatibility constructors.
+
+## Examples
+
+The runnable examples use a local HTTPS mock server and never call Twilio:
+
+```sh
+cargo run --example messages_builder
+cargo run --example messaging_services
+```
 
 ## Observability
 
@@ -88,15 +150,16 @@ events go to logs, OpenTelemetry, tests, or nowhere.
 
 Each request runs inside a `twilio2.request` span with the operation name and HTTP
 method. Diagnostics intentionally avoid auth tokens, `Authorization` headers,
-full URLs, phone numbers, message bodies, SIDs, page URIs, media URLs, content
-variables, persistent actions, and tags.
+full URLs, phone numbers, message bodies, SIDs, page URLs/URIs, sender IDs,
+media URLs, content variables, persistent actions, tags, callback URLs, and
+friendly names.
 
 Transport/decode/API diagnostics are sanitized before being logged or stored in
 `TwilioError`: known sensitive request values are removed, Basic/Bearer
 credentials are redacted, sensitive key-value fields are replaced with
 `<redacted>`, and URLs are redacted. `Debug` output for returned structs also
-redacts message/media identifiers, message bodies, phone numbers, and page URIs
-to reduce accidental application log leaks.
+redacts resource identifiers, message bodies, phone numbers, sender IDs, links,
+and URLs to reduce accidental application log leaks.
 
 ## License
 

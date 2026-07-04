@@ -1180,6 +1180,82 @@ async fn deactivations_and_account_short_codes_use_expected_wire_shape() {
 }
 
 #[tokio::test]
+async fn account_short_codes_list_all_collects_pages_with_contract_filters() {
+    let next_page_uri = "/2010-04-01/Accounts/AC123/SMS/ShortCodes.json?FriendlyName=Alerts&PageSize=1&Page=1&PageToken=next";
+    let server = HttpsMockServer::start(vec![
+        MockResponse::json(account_short_code_page_json(
+            &[account_short_code_json("SCpage1", "Alerts")],
+            Some(next_page_uri),
+        )),
+        MockResponse::json(account_short_code_page_json(
+            &[account_short_code_json("SCpage2", "Alerts")],
+            None,
+        )),
+    ])
+    .await;
+    let client = client_for(&server);
+    let short_codes = client
+        .account(test_creds())
+        .short_codes()
+        .list_all_with(
+            ListAccountShortCodesRequest::new()
+                .friendly_name("Alerts")
+                .page_size(1),
+        )
+        .collect_all()
+        .await
+        .unwrap();
+
+    assert_eq!(short_codes.len(), 2);
+    assert_eq!(short_codes[0].sid.as_deref(), Some("SCpage1"));
+    assert_eq!(short_codes[1].sid.as_deref(), Some("SCpage2"));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].path,
+        "/2010-04-01/Accounts/AC123/SMS/ShortCodes.json?FriendlyName=Alerts&PageSize=1"
+    );
+    assert_eq!(requests[1].path, next_page_uri);
+    for request in &requests {
+        assert_basic_auth(request);
+    }
+}
+
+#[tokio::test]
+async fn malformed_deactivation_response_is_decode_error() {
+    let server = HttpsMockServer::start(vec![MockResponse::status_json(
+        307,
+        r#"{"redirect_to":123}"#,
+    )])
+    .await;
+    let client = client_for(&server);
+    let err = client
+        .account(test_creds())
+        .deactivations()
+        .fetch(FetchDeactivationsRequest::new("2023-08-13"))
+        .await
+        .unwrap_err();
+
+    assert_decode_error(&err);
+    let rendered = format!("{err:?}");
+    for leaked in [
+        "AC123",
+        "auth-token",
+        "storage.example.test",
+        "signature=secret",
+    ] {
+        assert!(
+            !rendered.contains(leaked),
+            "decode diagnostic leaked {leaked:?}: {rendered}"
+        );
+    }
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/v1/Deactivations?Date=2023-08-13");
+    assert_basic_auth(&requests[0]);
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn tollfree_verifications_crud_list_and_repeated_keys_work() {
     let categories = [
@@ -1350,6 +1426,98 @@ async fn tollfree_verifications_crud_list_and_repeated_keys_work() {
     );
     assert_eq!(requests[5].method, "DELETE");
     assert_eq!(requests[5].path, "/v1/Tollfree/Verifications/HHdelete");
+    for request in &requests {
+        assert_basic_auth(request);
+    }
+}
+
+#[tokio::test]
+async fn tollfree_verifications_list_all_collects_pages_with_contract_filters() {
+    let trust_product_sids = ["BUtrust1", "BUtrust2"];
+    let next_page_url = format!(
+        "{}/v1/Tollfree/Verifications?Status=TWILIO_APPROVED&TrustProductSid=BUtrust1&TrustProductSid=BUtrust2&PageSize=1&Page=1&PageToken=next",
+        server_url_placeholder()
+    );
+    let server = HttpsMockServer::start(vec![
+        MockResponse::json(tollfree_verification_page_json(
+            &[tollfree_verification_json("HHpage1", "TWILIO_APPROVED")],
+            Some(&next_page_url),
+        )),
+        MockResponse::json(tollfree_verification_page_json(
+            &[tollfree_verification_json("HHpage2", "TWILIO_APPROVED")],
+            None,
+        )),
+    ])
+    .await;
+    let client = client_for(&server);
+    let verifications = client
+        .account(test_creds())
+        .tollfree_verifications()
+        .list_all_with(
+            ListTollfreeVerificationsRequest::new()
+                .status(TollfreeVerificationStatus::TwilioApproved)
+                .trust_product_sids(&trust_product_sids)
+                .page_size(1),
+        )
+        .collect_all()
+        .await
+        .unwrap();
+
+    assert_eq!(verifications.len(), 2);
+    assert_eq!(verifications[0].sid.as_deref(), Some("HHpage1"));
+    assert_eq!(verifications[1].sid.as_deref(), Some("HHpage2"));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].path,
+        "/v1/Tollfree/Verifications?Status=TWILIO_APPROVED&TrustProductSid=BUtrust1&TrustProductSid=BUtrust2&PageSize=1"
+    );
+    assert_eq!(
+        requests[1].path,
+        "/v1/Tollfree/Verifications?Status=TWILIO_APPROVED&TrustProductSid=BUtrust1&TrustProductSid=BUtrust2&PageSize=1&Page=1&PageToken=next"
+    );
+    for request in &requests {
+        assert_basic_auth(request);
+    }
+}
+
+#[tokio::test]
+async fn new_endpoint_optional_setters_use_expected_form_keys() {
+    let server = HttpsMockServer::start(vec![
+        MockResponse::json(account_short_code_json("SCupdate", "Updated")),
+        MockResponse::json(tollfree_verification_json("HHupdate", "IN_REVIEW")),
+    ])
+    .await;
+    let client = client_for(&server);
+    let account = client.account(test_creds());
+
+    account
+        .short_code("SCupdate")
+        .update(UpdateAccountShortCodeRequest::new().clear_sms_fallback_url())
+        .await
+        .unwrap();
+    account
+        .tollfree_verification("HHupdate")
+        .update(
+            UpdateTollfreeVerificationRequest::new()
+                .business_street_address2("Suite 101")
+                .additional_information("Additional context"),
+        )
+        .await
+        .unwrap();
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].path,
+        "/2010-04-01/Accounts/AC123/SMS/ShortCodes/SCupdate.json"
+    );
+    assert_eq!(requests[0].body, "SmsFallbackUrl=");
+    assert_eq!(requests[1].path, "/v1/Tollfree/Verifications/HHupdate");
+    assert_eq!(
+        requests[1].body,
+        "BusinessStreetAddress2=Suite+101&AdditionalInformation=Additional+context"
+    );
     for request in &requests {
         assert_basic_auth(request);
     }

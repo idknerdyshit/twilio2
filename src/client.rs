@@ -9,8 +9,11 @@ use crate::common::{
     api_error_from_response, decode_json_response, endpoint_url_from_base,
     legacy_page_uri_url_from_base, request_span, transport_error, v1_page_url_from_base,
 };
+use crate::deactivations::DeactivationsResource;
 use crate::messages::{MessageResource, MessagesResource};
 use crate::services::{ServiceResource, ServicesResource};
+use crate::short_codes::{AccountShortCodeResource, AccountShortCodesResource};
+use crate::tollfree_verifications::{TollfreeVerificationResource, TollfreeVerificationsResource};
 
 /// A thin Twilio API client over an injected [`reqwest::Client`].
 ///
@@ -261,7 +264,7 @@ impl TwilioClient {
             .await
             .map_err(|e| transport_error(&e, sensitive_values))?;
         let status = response.status();
-        if !status.is_success() {
+        if !status.is_success() && !spec.accepts_status(status.as_u16()) {
             let status = status.as_u16();
             return Err(api_error_from_response(response, status, sensitive_values).await);
         }
@@ -302,6 +305,24 @@ impl<'a> TwilioAccount<'a> {
         MessageResource::new(self, sid)
     }
 
+    /// Messaging v1 Deactivations collection.
+    #[must_use]
+    pub fn deactivations(self) -> DeactivationsResource<'a> {
+        DeactivationsResource::new(self)
+    }
+
+    /// Legacy account-level `ShortCodes` collection.
+    #[must_use]
+    pub fn short_codes(self) -> AccountShortCodesResource<'a> {
+        AccountShortCodesResource::new(self)
+    }
+
+    /// One legacy account-level `ShortCode` resource.
+    #[must_use]
+    pub fn short_code(self, sid: &'a str) -> AccountShortCodeResource<'a> {
+        AccountShortCodeResource::new(self, sid)
+    }
+
     /// Messaging Services collection.
     #[must_use]
     pub fn services(self) -> ServicesResource<'a> {
@@ -312,6 +333,18 @@ impl<'a> TwilioAccount<'a> {
     #[must_use]
     pub fn service(self, sid: &'a str) -> ServiceResource<'a> {
         ServiceResource::new(self, sid)
+    }
+
+    /// Messaging v1 Toll-free Verifications collection.
+    #[must_use]
+    pub fn tollfree_verifications(self) -> TollfreeVerificationsResource<'a> {
+        TollfreeVerificationsResource::new(self)
+    }
+
+    /// One Messaging v1 Toll-free Verification resource.
+    #[must_use]
+    pub fn tollfree_verification(self, sid: &'a str) -> TollfreeVerificationResource<'a> {
+        TollfreeVerificationResource::new(self, sid)
     }
 
     /// Execute a custom Twilio operation and decode its response.

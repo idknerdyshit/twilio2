@@ -7,9 +7,12 @@ It covers:
 - Messages: create, fetch, list, update/redact/cancel, and delete
 - Message Media: fetch metadata, download bytes, list, pagination, and delete
 - Message Feedback creation
+- Messaging v1 Deactivations report redirects
+- Legacy account-level ShortCodes: fetch, list, pagination, and update
 - Messaging Services: create, fetch, list, update, pagination, and delete
 - Service sender subresources: PhoneNumbers, ShortCodes, AlphaSenders,
   ChannelSenders, and DestinationAlphaSenders
+- Messaging v1 Toll-free Verifications: create, fetch, list, update, and delete
 
 The client stores only a shared `reqwest::Client` and parsed base URLs. Account
 SID and Auth Token values are passed through `TwilioCreds` to an account-scoped

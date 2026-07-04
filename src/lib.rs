@@ -6,8 +6,9 @@
 //! retain auth tokens, phone numbers, callback URLs, sender IDs, or message
 //! bodies after a request completes.
 //!
-//! The crate covers the legacy Messages REST API and the Messaging v1 Services
-//! API, including Service sender subresources.
+//! The crate covers the legacy Messages and account-level `ShortCodes` REST APIs,
+//! Messaging v1 Services and sender subresources, Deactivations, and Toll-free
+//! Verifications.
 //!
 //! # Examples
 //!
@@ -178,8 +179,11 @@ compile_error!(
 
 mod client;
 mod common;
+mod deactivations;
 mod messages;
 mod services;
+mod short_codes;
+mod tollfree_verifications;
 
 pub use client::{TwilioAccount, TwilioClient};
 pub use common::{
@@ -188,6 +192,7 @@ pub use common::{
     TwilioClientConfig, TwilioConfig, TwilioCreds, TwilioError, TwilioMediaContent,
     TwilioPaginator, V1PageMeta, decode_json_response,
 };
+pub use deactivations::{DeactivationsResource, FetchDeactivationsRequest, TwilioDeactivation};
 pub use messages::{
     AddressRetention, ContentRetention, CreateMessageFeedbackRequest, CreateMessageRequest,
     ListMediaRequest, ListMessagesRequest, MessageFeedbackOutcome, MessageFeedbackResource,
@@ -206,4 +211,15 @@ pub use services::{
     TwilioChannelSenderPage, TwilioDestinationAlphaSender, TwilioDestinationAlphaSenderPage,
     TwilioService, TwilioServicePage, TwilioServicePhoneNumber, TwilioServicePhoneNumberPage,
     TwilioServiceShortCode, TwilioServiceShortCodePage, UpdateServiceRequest,
+};
+pub use short_codes::{
+    AccountShortCodeResource, AccountShortCodesResource, ListAccountShortCodesRequest,
+    TwilioAccountShortCode, TwilioAccountShortCodePage, UpdateAccountShortCodeRequest,
+};
+pub use tollfree_verifications::{
+    CreateTollfreeVerificationRequest, ListTollfreeVerificationsRequest,
+    TollfreeBusinessRegistrationAuthority, TollfreeBusinessType, TollfreeMessageVolume,
+    TollfreeOptInType, TollfreeUseCaseCategory, TollfreeVerificationResource,
+    TollfreeVerificationStatus, TollfreeVerificationsResource, TollfreeVettingProvider,
+    TwilioTollfreeVerification, TwilioTollfreeVerificationPage, UpdateTollfreeVerificationRequest,
 };

@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add Messaging Services create/fetch/list/page/update/delete support.
 - Add Service PhoneNumbers, ShortCodes, AlphaSenders, ChannelSenders, and
   DestinationAlphaSenders create/fetch/list/page/delete support.
+- Add Deactivations, account-level ShortCodes, and Toll-free Verifications
+  support.
 - Add Messaging v1 page metadata handling with `V1PageMeta`.
 - Add strict Messaging v1 `next_page_url` validation for origin, base path,
   resource path, query keys, duplicate keys, and stable filters.

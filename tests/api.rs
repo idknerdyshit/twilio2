@@ -15,16 +15,22 @@ use twilio2::{
     AddressRetention, ApiFamily, ContentRetention, CreateAlphaSenderRequest,
     CreateChannelSenderRequest, CreateDestinationAlphaSenderRequest, CreateMessageFeedbackRequest,
     CreateMessageRequest, CreateServicePhoneNumberRequest, CreateServiceRequest,
-    CreateServiceShortCodeRequest, HttpMethod, ListDestinationAlphaSendersRequest,
-    ListMediaRequest, ListMessagesRequest, ListServiceSubresourcesRequest, ListServicesRequest,
-    MessageFeedbackOutcome, Operation, RawResponse, RequestOptions, RequestSpec, RetryPolicy,
-    RiskCheck, ScanMessageContent, ScheduleType, ServiceUsecase, TrafficType, TwilioAlphaSender,
-    TwilioAlphaSenderPage, TwilioChannelSender, TwilioChannelSenderPage, TwilioClient,
-    TwilioClientConfig, TwilioConfig, TwilioCreds, TwilioDestinationAlphaSender,
-    TwilioDestinationAlphaSenderPage, TwilioError, TwilioMedia, TwilioMediaPage, TwilioMessage,
-    TwilioMessageFeedback, TwilioMessagePage, TwilioServicePage, TwilioServicePhoneNumber,
-    TwilioServicePhoneNumberPage, TwilioServiceShortCode, TwilioServiceShortCodePage,
-    UpdateMessageRequest, UpdateServiceRequest, V1PageMeta,
+    CreateServiceShortCodeRequest, CreateTollfreeVerificationRequest, FetchDeactivationsRequest,
+    HttpMethod, ListAccountShortCodesRequest, ListDestinationAlphaSendersRequest, ListMediaRequest,
+    ListMessagesRequest, ListServiceSubresourcesRequest, ListServicesRequest,
+    ListTollfreeVerificationsRequest, MessageFeedbackOutcome, Operation, RawResponse,
+    RequestOptions, RequestSpec, RetryPolicy, RiskCheck, ScanMessageContent, ScheduleType,
+    ServiceUsecase, TollfreeBusinessRegistrationAuthority, TollfreeBusinessType,
+    TollfreeMessageVolume, TollfreeOptInType, TollfreeUseCaseCategory, TollfreeVerificationStatus,
+    TollfreeVettingProvider, TrafficType, TwilioAccountShortCode, TwilioAccountShortCodePage,
+    TwilioAlphaSender, TwilioAlphaSenderPage, TwilioChannelSender, TwilioChannelSenderPage,
+    TwilioClient, TwilioClientConfig, TwilioConfig, TwilioCreds, TwilioDeactivation,
+    TwilioDestinationAlphaSender, TwilioDestinationAlphaSenderPage, TwilioError, TwilioMedia,
+    TwilioMediaPage, TwilioMessage, TwilioMessageFeedback, TwilioMessagePage, TwilioServicePage,
+    TwilioServicePhoneNumber, TwilioServicePhoneNumberPage, TwilioServiceShortCode,
+    TwilioServiceShortCodePage, TwilioTollfreeVerification, TwilioTollfreeVerificationPage,
+    UpdateAccountShortCodeRequest, UpdateMessageRequest, UpdateServiceRequest,
+    UpdateTollfreeVerificationRequest, V1PageMeta,
 };
 
 #[derive(Clone)]
@@ -253,6 +259,7 @@ async fn write_http_response<S: AsyncWrite + Unpin>(
         200 => "OK",
         201 => "Created",
         204 => "No Content",
+        307 => "Temporary Redirect",
         _ => "Error",
     };
     let content_length = response.content_length.unwrap_or(response.body.len());
@@ -1082,6 +1089,273 @@ async fn service_subresources_use_exact_forms_keys_and_page_urls() {
 }
 
 #[tokio::test]
+async fn deactivations_and_account_short_codes_use_expected_wire_shape() {
+    let next_page_uri = "/2010-04-01/Accounts/AC123/SMS/ShortCodes.json?FriendlyName=Alerts&ShortCode=12345&PageSize=2&Page=1&PageToken=next";
+    let server = HttpsMockServer::start(vec![
+        MockResponse::status_json(
+            307,
+            r#"{"redirect_to":"https://storage.example.test/deactivations?signature=secret"}"#,
+        ),
+        MockResponse::json(account_short_code_json("SCfetch", "Fetched")),
+        MockResponse::json(account_short_code_page_json(
+            &[account_short_code_json("SClist", "Listed")],
+            Some(next_page_uri),
+        )),
+        MockResponse::json(account_short_code_page_json(&[], None)),
+        MockResponse::json(account_short_code_json("SCupdate", "Updated")),
+    ])
+    .await;
+    let client = client_for(&server);
+    let account = client.account(test_creds());
+
+    let deactivation = account
+        .deactivations()
+        .fetch(FetchDeactivationsRequest::new("2023-08-13"))
+        .await
+        .unwrap();
+    let fetched = account.short_code("SCfetch").fetch().await.unwrap();
+    let first = account
+        .short_codes()
+        .list(
+            ListAccountShortCodesRequest::new()
+                .friendly_name("Alerts")
+                .short_code("12345")
+                .page_size(2)
+                .page(0),
+        )
+        .await
+        .unwrap();
+    let second = account
+        .short_codes()
+        .list_page_uri(first.next_page_uri.as_deref().unwrap())
+        .await
+        .unwrap();
+    let updated = account
+        .short_code("SCupdate")
+        .update(
+            UpdateAccountShortCodeRequest::new()
+                .friendly_name("Updated")
+                .api_version("2010-04-01")
+                .clear_sms_url()
+                .sms_method(HttpMethod::Post)
+                .sms_fallback_url("https://example.test/fallback")
+                .sms_fallback_method(HttpMethod::Get),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        deactivation.redirect_to.as_deref(),
+        Some("https://storage.example.test/deactivations?signature=secret")
+    );
+    assert_eq!(fetched.sid.as_deref(), Some("SCfetch"));
+    assert_eq!(first.short_codes[0].sid.as_deref(), Some("SClist"));
+    assert!(second.short_codes.is_empty());
+    assert_eq!(updated.friendly_name.as_deref(), Some("Updated"));
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].path, "/v1/Deactivations?Date=2023-08-13");
+    assert_eq!(
+        requests[1].path,
+        "/2010-04-01/Accounts/AC123/SMS/ShortCodes/SCfetch.json"
+    );
+    assert_eq!(
+        requests[2].path,
+        "/2010-04-01/Accounts/AC123/SMS/ShortCodes.json?FriendlyName=Alerts&ShortCode=12345&PageSize=2&Page=0"
+    );
+    assert_eq!(requests[3].path, next_page_uri);
+    assert_eq!(
+        requests[4].path,
+        "/2010-04-01/Accounts/AC123/SMS/ShortCodes/SCupdate.json"
+    );
+    assert_eq!(
+        requests[4].body,
+        "FriendlyName=Updated&ApiVersion=2010-04-01&SmsUrl=&SmsMethod=POST&SmsFallbackUrl=https%3A%2F%2Fexample.test%2Ffallback&SmsFallbackMethod=GET"
+    );
+    for request in &requests {
+        assert_basic_auth(request);
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn tollfree_verifications_crud_list_and_repeated_keys_work() {
+    let categories = [
+        TollfreeUseCaseCategory::TwoFactorAuthentication,
+        TollfreeUseCaseCategory::Marketing,
+        TollfreeUseCaseCategory::PollingAndVotingNonPolitical,
+    ];
+    let opt_in_image_urls = [
+        "https://example.test/opt-in-1.png",
+        "https://example.test/opt-in-2.png",
+    ];
+    let opt_in_keywords = ["START", "JOIN"];
+    let trust_product_sids = ["BUtrust1", "BUtrust2"];
+    let next_page_url = format!(
+        "{}/v1/Tollfree/Verifications?TollfreePhoneNumberSid=PNlist&Status=TWILIO_APPROVED&ExternalReferenceId=external-123&IncludeSubAccounts=true&TrustProductSid=BUtrust1&TrustProductSid=BUtrust2&PageSize=2&Page=1&PageToken=next",
+        server_url_placeholder()
+    );
+    let server = HttpsMockServer::start(vec![
+        MockResponse::created_json(tollfree_verification_json("HHcreate", "PENDING_REVIEW")),
+        MockResponse::json(tollfree_verification_json("HHfetch", "TWILIO_APPROVED")),
+        MockResponse::json(tollfree_verification_page_json(
+            &[tollfree_verification_json("HHlist", "TWILIO_APPROVED")],
+            Some(&next_page_url),
+        )),
+        MockResponse::json(tollfree_verification_page_json(&[], None)),
+        MockResponse::json(tollfree_verification_json("HHupdate", "IN_REVIEW")),
+        MockResponse::no_content(),
+    ])
+    .await;
+    let client = client_for(&server);
+    let account = client.account(test_creds());
+
+    let create = CreateTollfreeVerificationRequest::new()
+        .business_name("Owl, Inc.")
+        .business_website("https://example.test")
+        .notification_email("support@example.test")
+        .use_case_categories(&categories)
+        .use_case_summary("Account security and marketing alerts")
+        .production_message_sample("Your code is 123456")
+        .opt_in_image_urls(&opt_in_image_urls)
+        .opt_in_type(TollfreeOptInType::Verbal)
+        .message_volume(TollfreeMessageVolume::Thousand)
+        .tollfree_phone_number_sid("PNcreate")
+        .customer_profile_sid("BUcustomer")
+        .business_street_address("123 Main Street")
+        .business_city("Detroit")
+        .business_state_province_region("MI")
+        .business_postal_code("48201")
+        .business_country("US")
+        .business_contact_first_name("Ada")
+        .business_contact_last_name("Lovelace")
+        .business_contact_email("ada@example.test")
+        .business_contact_phone("+15551234567")
+        .external_reference_id("external-123")
+        .business_registration_number("123456789")
+        .business_registration_authority(TollfreeBusinessRegistrationAuthority::Ein)
+        .business_registration_country("US")
+        .business_type(TollfreeBusinessType::PrivateProfit)
+        .business_registration_phone_number("+15557654321")
+        .doing_business_as("Owl Alerts")
+        .opt_in_confirmation_message("Thanks for opting in")
+        .help_message_sample("Reply HELP for help")
+        .privacy_policy_url("https://example.test/privacy")
+        .terms_and_conditions_url("https://example.test/terms")
+        .age_gated_content(false)
+        .opt_in_keywords(&opt_in_keywords)
+        .vetting_provider(TollfreeVettingProvider::CampaignVerify)
+        .vetting_id("vetting-123");
+    let created = account
+        .tollfree_verifications()
+        .create(create)
+        .await
+        .unwrap();
+    let fetched = account
+        .tollfree_verification("HHfetch")
+        .fetch()
+        .await
+        .unwrap();
+    let first = account
+        .tollfree_verifications()
+        .list(
+            ListTollfreeVerificationsRequest::new()
+                .tollfree_phone_number_sid("PNlist")
+                .status(TollfreeVerificationStatus::TwilioApproved)
+                .external_reference_id("external-123")
+                .include_sub_accounts(true)
+                .trust_product_sids(&trust_product_sids)
+                .page_size(2)
+                .page(0),
+        )
+        .await
+        .unwrap();
+    let second = account
+        .tollfree_verifications()
+        .list_page_url(first.meta.next_page_url.as_deref().unwrap())
+        .await
+        .unwrap();
+    let updated = account
+        .tollfree_verification("HHupdate")
+        .update(
+            UpdateTollfreeVerificationRequest::new()
+                .business_name("Owl Updated")
+                .edit_reason("Website fixed")
+                .opt_in_keywords(&opt_in_keywords)
+                .age_gated_content(false),
+        )
+        .await
+        .unwrap();
+    account
+        .tollfree_verification("HHdelete")
+        .delete()
+        .await
+        .unwrap();
+
+    assert_eq!(created.sid.as_deref(), Some("HHcreate"));
+    assert_eq!(fetched.status.as_deref(), Some("TWILIO_APPROVED"));
+    assert_eq!(first.meta.key.as_deref(), Some("verifications"));
+    assert_eq!(
+        first.tollfree_verifications[0].sid.as_deref(),
+        Some("HHlist")
+    );
+    assert!(second.tollfree_verifications.is_empty());
+    assert_eq!(updated.sid.as_deref(), Some("HHupdate"));
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 6);
+    assert_eq!(requests[0].path, "/v1/Tollfree/Verifications");
+    for expected in [
+        "BusinessName=Owl%2C+Inc.",
+        "BusinessWebsite=https%3A%2F%2Fexample.test",
+        "NotificationEmail=support%40example.test",
+        "UseCaseCategories=TWO_FACTOR_AUTHENTICATION",
+        "UseCaseCategories=MARKETING",
+        "UseCaseCategories=POLLING_AND_VOTING_NON_POLITICAL",
+        "ProductionMessageSample=Your+code+is+123456",
+        "OptInImageUrls=https%3A%2F%2Fexample.test%2Fopt-in-1.png",
+        "OptInImageUrls=https%3A%2F%2Fexample.test%2Fopt-in-2.png",
+        "OptInType=VERBAL",
+        "MessageVolume=1%2C000",
+        "TollfreePhoneNumberSid=PNcreate",
+        "BusinessRegistrationAuthority=EIN",
+        "BusinessType=PRIVATE_PROFIT",
+        "AgeGatedContent=false",
+        "OptInKeywords=START",
+        "OptInKeywords=JOIN",
+        "VettingProvider=CAMPAIGN_VERIFY",
+        "VettingId=vetting-123",
+    ] {
+        assert!(
+            requests[0].body.contains(expected),
+            "missing {expected} in {}",
+            requests[0].body
+        );
+    }
+    assert_eq!(requests[1].path, "/v1/Tollfree/Verifications/HHfetch");
+    assert_eq!(
+        requests[2].path,
+        "/v1/Tollfree/Verifications?TollfreePhoneNumberSid=PNlist&Status=TWILIO_APPROVED&ExternalReferenceId=external-123&IncludeSubAccounts=true&TrustProductSid=BUtrust1&TrustProductSid=BUtrust2&PageSize=2&Page=0"
+    );
+    assert_eq!(
+        requests[3].path,
+        "/v1/Tollfree/Verifications?TollfreePhoneNumberSid=PNlist&Status=TWILIO_APPROVED&ExternalReferenceId=external-123&IncludeSubAccounts=true&TrustProductSid=BUtrust1&TrustProductSid=BUtrust2&PageSize=2&Page=1&PageToken=next"
+    );
+    assert_eq!(requests[4].path, "/v1/Tollfree/Verifications/HHupdate");
+    assert_eq!(
+        requests[4].body,
+        "BusinessName=Owl+Updated&EditReason=Website+fixed&AgeGatedContent=false&OptInKeywords=START&OptInKeywords=JOIN"
+    );
+    assert_eq!(requests[5].method, "DELETE");
+    assert_eq!(requests[5].path, "/v1/Tollfree/Verifications/HHdelete");
+    for request in &requests {
+        assert_basic_auth(request);
+    }
+}
+
+#[tokio::test]
 async fn message_request_validation_catches_local_errors() {
     let mut create = CreateMessageRequest::new("");
     create.from = Some("+15557654321");
@@ -1231,6 +1505,69 @@ async fn service_request_validation_catches_local_errors() {
 }
 
 #[tokio::test]
+async fn new_endpoint_validation_catches_local_errors() {
+    let server = HttpsMockServer::start(Vec::new()).await;
+    let client = client_for(&server);
+    let account = client.account(test_creds());
+
+    assert_invalid_request(
+        account
+            .deactivations()
+            .fetch(FetchDeactivationsRequest::new("2026-02-30"))
+            .await
+            .unwrap_err(),
+        "Date",
+    );
+    assert_invalid_request(
+        account
+            .short_code("SC123")
+            .update(UpdateAccountShortCodeRequest::new())
+            .await
+            .unwrap_err(),
+        "at least one field",
+    );
+    assert_invalid_request(
+        account
+            .tollfree_verifications()
+            .create(CreateTollfreeVerificationRequest::new())
+            .await
+            .unwrap_err(),
+        "BusinessName",
+    );
+    assert_invalid_request(
+        account
+            .tollfree_verification("HH123")
+            .update(UpdateTollfreeVerificationRequest::new())
+            .await
+            .unwrap_err(),
+        "at least one field",
+    );
+
+    let categories = [TollfreeUseCaseCategory::Raw("")];
+    assert_invalid_request(
+        account
+            .tollfree_verifications()
+            .create(
+                CreateTollfreeVerificationRequest::new()
+                    .business_name("Owl")
+                    .business_website("https://example.test")
+                    .notification_email("support@example.test")
+                    .use_case_categories(&categories)
+                    .use_case_summary("Alerts")
+                    .production_message_sample("Sample")
+                    .opt_in_image_urls(&["https://example.test/opt.png"])
+                    .opt_in_type(TollfreeOptInType::Verbal)
+                    .message_volume(TollfreeMessageVolume::Ten)
+                    .tollfree_phone_number_sid("PN123"),
+            )
+            .await
+            .unwrap_err(),
+        "UseCaseCategories",
+    );
+    assert!(server.requests().is_empty());
+}
+
+#[tokio::test]
 async fn page_size_validation_catches_local_errors() {
     let server = HttpsMockServer::start(Vec::new()).await;
     let client = client_for(&server);
@@ -1310,6 +1647,24 @@ async fn page_size_validation_catches_local_errors() {
                 .service("MG123")
                 .destination_alpha_senders()
                 .list(ListDestinationAlphaSendersRequest::new().page_size(page_size))
+                .await
+                .unwrap_err(),
+            "PageSize",
+        );
+
+        assert_invalid_request(
+            account
+                .short_codes()
+                .list(ListAccountShortCodesRequest::new().page_size(page_size))
+                .await
+                .unwrap_err(),
+            "PageSize",
+        );
+
+        assert_invalid_request(
+            account
+                .tollfree_verifications()
+                .list(ListTollfreeVerificationsRequest::new().page_size(page_size))
                 .await
                 .unwrap_err(),
             "PageSize",
@@ -1571,6 +1926,70 @@ fn service_subresource_debug_output_redacts_sensitive_values() {
             meta: v1_meta_from_parts("alpha_senders"),
         },
         &["AC123", "MG123", "AI123", "MyCo", "https://example.test"],
+    );
+}
+
+#[test]
+fn new_endpoint_debug_output_redacts_sensitive_values() {
+    assert_debug_redacts(
+        &TwilioDeactivation {
+            redirect_to: Some("https://storage.example.test/deactivations?signature=secret".into()),
+        },
+        &["storage.example.test", "signature=secret"],
+    );
+
+    let short_code = account_short_code_from_parts();
+    assert_debug_redacts(
+        &short_code,
+        &[
+            "AC123",
+            "SC123",
+            "12345",
+            "Alerts",
+            "https://example.test/sms",
+            "/2010-04-01",
+        ],
+    );
+    assert_debug_redacts(
+        &TwilioAccountShortCodePage {
+            short_codes: vec![short_code],
+            next_page_uri: Some("/2010-04-01/Accounts/AC123/SMS/ShortCodes.json?Page=1".to_owned()),
+            first_page_uri: Some(
+                "/2010-04-01/Accounts/AC123/SMS/ShortCodes.json?Page=0".to_owned(),
+            ),
+            previous_page_uri: None,
+            uri: Some("/2010-04-01/Accounts/AC123/SMS/ShortCodes.json?Page=0".to_owned()),
+            page: Some(0),
+            page_size: Some(50),
+            start: Some(0),
+            end: Some(0),
+        },
+        &["AC123", "SC123", "12345", "/2010-04-01"],
+    );
+
+    let verification = tollfree_verification_from_parts();
+    assert_debug_redacts(
+        &verification,
+        &[
+            "HH123",
+            "AC123",
+            "PN123",
+            "+18003334444",
+            "Owl, Inc.",
+            "Ada",
+            "ada@example.test",
+            "https://example.test/privacy",
+            "Your code is 123456",
+            "START",
+            "https://example.test/opt.png",
+        ],
+    );
+    assert_debug_redacts(
+        &TwilioTollfreeVerificationPage {
+            tollfree_verifications: vec![verification],
+            meta: v1_meta_from_parts("verifications"),
+        },
+        &["HH123", "AC123", "PN123", "https://example.test"],
     );
 }
 
@@ -1891,6 +2310,127 @@ fn destination_alpha_sender_empty_page_json() -> String {
     )
 }
 
+fn account_short_code_json(sid: &str, friendly_name: &str) -> String {
+    format!(
+        r#"{{
+            "account_sid": "AC123",
+            "api_version": "2010-04-01",
+            "date_created": "Thu, 01 Apr 2010 00:00:00 +0000",
+            "date_updated": "Thu, 01 Apr 2010 00:00:00 +0000",
+            "friendly_name": "{friendly_name}",
+            "short_code": "12345",
+            "sid": "{sid}",
+            "sms_fallback_method": "POST",
+            "sms_fallback_url": "https://example.test/fallback",
+            "sms_method": "POST",
+            "sms_url": "https://example.test/sms",
+            "uri": "/2010-04-01/Accounts/AC123/SMS/ShortCodes/{sid}.json"
+        }}"#
+    )
+}
+
+fn account_short_code_page_json(short_codes: &[String], next_page_uri: Option<&str>) -> String {
+    let next = next_page_uri.map_or_else(|| "null".to_owned(), |value| format!(r#""{value}""#));
+    format!(
+        r#"{{
+            "short_codes": [{short_codes}],
+            "next_page_uri": {next},
+            "first_page_uri": "/2010-04-01/Accounts/AC123/SMS/ShortCodes.json?Page=0",
+            "previous_page_uri": null,
+            "uri": "/2010-04-01/Accounts/AC123/SMS/ShortCodes.json?Page=0",
+            "page": 0,
+            "page_size": 2,
+            "start": 0,
+            "end": 0
+        }}"#,
+        short_codes = short_codes.join(",")
+    )
+}
+
+fn tollfree_verification_json(sid: &str, status: &str) -> String {
+    format!(
+        r#"{{
+            "sid": "{sid}",
+            "account_sid": "AC123",
+            "customer_profile_sid": "BUcustomer",
+            "trust_product_sid": "BUtrust",
+            "regulated_item_sid": "RA123",
+            "date_created": "2021-01-27T14:18:35Z",
+            "date_updated": "2021-01-27T14:18:36Z",
+            "business_name": "Owl, Inc.",
+            "business_street_address": "123 Main Street",
+            "business_street_address2": "Suite 101",
+            "business_city": "Detroit",
+            "business_state_province_region": "MI",
+            "business_postal_code": "48201",
+            "business_country": "US",
+            "business_website": "https://example.test",
+            "business_contact_first_name": "Ada",
+            "business_contact_last_name": "Lovelace",
+            "business_contact_email": "ada@example.test",
+            "business_contact_phone": "+15551234567",
+            "notification_email": "support@example.test",
+            "use_case_categories": ["TWO_FACTOR_AUTHENTICATION", "MARKETING"],
+            "use_case_summary": "Account security and marketing alerts",
+            "production_message_sample": "Your code is 123456",
+            "opt_in_image_urls": ["https://example.test/opt.png"],
+            "opt_in_type": "VERBAL",
+            "message_volume": "1,000",
+            "additional_information": "Additional context",
+            "tollfree_phone_number_sid": "PN123",
+            "tollfree_phone_number": "+18003334444",
+            "status": "{status}",
+            "rejection_reason": null,
+            "error_code": null,
+            "edit_expiration": null,
+            "edit_allowed": true,
+            "rejection_reasons": null,
+            "resource_links": {{
+                "customer_profile": "https://trusthub.twilio.com/v1/CustomerProfiles/BUcustomer"
+            }},
+            "url": "https://messaging.twilio.com/v1/Tollfree/Verifications/{sid}",
+            "external_reference_id": "external-123",
+            "business_registration_number": "123456789",
+            "business_registration_authority": "EIN",
+            "business_registration_country": "US",
+            "business_type": "PRIVATE_PROFIT",
+            "business_registration_phone_number": "+15557654321",
+            "doing_business_as": "Owl Alerts",
+            "age_gated_content": false,
+            "help_message_sample": "Reply HELP for help",
+            "opt_in_confirmation_message": "Thanks for opting in",
+            "opt_in_keywords": ["START"],
+            "privacy_policy_url": "https://example.test/privacy",
+            "terms_and_conditions_url": "https://example.test/terms",
+            "vetting_id": "vetting-123",
+            "vetting_id_expiration": null,
+            "vetting_provider": "CAMPAIGN_VERIFY"
+        }}"#
+    )
+}
+
+fn tollfree_verification_page_json(
+    verifications: &[String],
+    next_page_url: Option<&str>,
+) -> String {
+    let next = next_page_url.map_or_else(|| "null".to_owned(), |value| format!(r#""{value}""#));
+    format!(
+        r#"{{
+            "meta": {{
+                "page": 0,
+                "page_size": 2,
+                "first_page_url": "__BASE_URL__/v1/Tollfree/Verifications?PageSize=2&Page=0",
+                "previous_page_url": null,
+                "next_page_url": {next},
+                "key": "verifications",
+                "url": "__BASE_URL__/v1/Tollfree/Verifications?PageSize=2&Page=0"
+            }},
+            "verifications": [{verifications}]
+        }}"#,
+        verifications = verifications.join(",")
+    )
+}
+
 fn service_from_parts() -> twilio2::TwilioService {
     twilio2::TwilioService {
         account_sid: Some("AC123".to_owned()),
@@ -2051,5 +2591,86 @@ fn destination_alpha_sender_from_parts() -> TwilioDestinationAlphaSender {
         capabilities: Some(vec!["SMS".to_owned()]),
         url: Some("https://example.test/destination_alpha_senders/AI123".to_owned()),
         iso_country_code: Some("FR".to_owned()),
+    }
+}
+
+fn account_short_code_from_parts() -> TwilioAccountShortCode {
+    TwilioAccountShortCode {
+        account_sid: Some("AC123".to_owned()),
+        api_version: Some("2010-04-01".to_owned()),
+        date_created: None,
+        date_updated: None,
+        friendly_name: Some("Alerts".to_owned()),
+        short_code: Some("12345".to_owned()),
+        sid: Some("SC123".to_owned()),
+        sms_fallback_method: Some("POST".to_owned()),
+        sms_fallback_url: Some("https://example.test/fallback".to_owned()),
+        sms_method: Some("POST".to_owned()),
+        sms_url: Some("https://example.test/sms".to_owned()),
+        uri: Some("/2010-04-01/Accounts/AC123/SMS/ShortCodes/SC123.json".to_owned()),
+    }
+}
+
+fn tollfree_verification_from_parts() -> TwilioTollfreeVerification {
+    TwilioTollfreeVerification {
+        sid: Some("HH123".to_owned()),
+        account_sid: Some("AC123".to_owned()),
+        customer_profile_sid: Some("BUcustomer".to_owned()),
+        trust_product_sid: Some("BUtrust".to_owned()),
+        regulated_item_sid: Some("RA123".to_owned()),
+        date_created: None,
+        date_updated: None,
+        business_name: Some("Owl, Inc.".to_owned()),
+        business_street_address: Some("123 Main Street".to_owned()),
+        business_street_address2: Some("Suite 101".to_owned()),
+        business_city: Some("Detroit".to_owned()),
+        business_state_province_region: Some("MI".to_owned()),
+        business_postal_code: Some("48201".to_owned()),
+        business_country: Some("US".to_owned()),
+        business_website: Some("https://example.test".to_owned()),
+        business_contact_first_name: Some("Ada".to_owned()),
+        business_contact_last_name: Some("Lovelace".to_owned()),
+        business_contact_email: Some("ada@example.test".to_owned()),
+        business_contact_phone: Some("+15551234567".to_owned()),
+        notification_email: Some("support@example.test".to_owned()),
+        use_case_categories: Some(vec![
+            "TWO_FACTOR_AUTHENTICATION".to_owned(),
+            "MARKETING".to_owned(),
+        ]),
+        use_case_summary: Some("Account security and marketing alerts".to_owned()),
+        production_message_sample: Some("Your code is 123456".to_owned()),
+        opt_in_image_urls: Some(vec!["https://example.test/opt.png".to_owned()]),
+        opt_in_type: Some("VERBAL".to_owned()),
+        message_volume: Some("1,000".to_owned()),
+        additional_information: Some("Additional context".to_owned()),
+        tollfree_phone_number_sid: Some("PN123".to_owned()),
+        tollfree_phone_number: Some("+18003334444".to_owned()),
+        status: Some("TWILIO_APPROVED".to_owned()),
+        rejection_reason: Some("Rejected for secret reason".to_owned()),
+        error_code: Some(30_000),
+        edit_expiration: None,
+        edit_allowed: Some(true),
+        rejection_reasons: Some(serde_json::json!({"secret": "reason"})),
+        resource_links: Some(BTreeMap::from([(
+            "customer_profile".to_owned(),
+            "https://trusthub.twilio.com/v1/CustomerProfiles/BUcustomer".to_owned(),
+        )])),
+        url: Some("https://messaging.twilio.com/v1/Tollfree/Verifications/HH123".to_owned()),
+        external_reference_id: Some("external-123".to_owned()),
+        business_registration_number: Some("123456789".to_owned()),
+        business_registration_authority: Some("EIN".to_owned()),
+        business_registration_country: Some("US".to_owned()),
+        business_type: Some("PRIVATE_PROFIT".to_owned()),
+        business_registration_phone_number: Some("+15557654321".to_owned()),
+        doing_business_as: Some("Owl Alerts".to_owned()),
+        age_gated_content: Some(false),
+        help_message_sample: Some("Reply HELP for help".to_owned()),
+        opt_in_confirmation_message: Some("Thanks for opting in".to_owned()),
+        opt_in_keywords: Some(vec!["START".to_owned()]),
+        privacy_policy_url: Some("https://example.test/privacy".to_owned()),
+        terms_and_conditions_url: Some("https://example.test/terms".to_owned()),
+        vetting_id: Some("vetting-123".to_owned()),
+        vetting_id_expiration: None,
+        vetting_provider: Some("CAMPAIGN_VERIFY".to_owned()),
     }
 }

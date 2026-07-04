@@ -725,6 +725,7 @@ pub struct RequestSpec {
     pub(crate) body: RequestBody,
     pub(crate) operation: &'static str,
     pub(crate) continuation: bool,
+    pub(crate) accepted_statuses: Vec<u16>,
 }
 
 impl RequestSpec {
@@ -743,6 +744,7 @@ impl RequestSpec {
             body: RequestBody::Empty,
             operation: "custom",
             continuation: false,
+            accepted_statuses: Vec::new(),
         }
     }
 
@@ -760,6 +762,7 @@ impl RequestSpec {
             body: RequestBody::Empty,
             operation,
             continuation: true,
+            accepted_statuses: Vec::new(),
         }
     }
 
@@ -815,6 +818,15 @@ impl RequestSpec {
     pub(crate) fn is_continuation(&self) -> bool {
         self.continuation
     }
+
+    pub(crate) fn accept_status(mut self, status: u16) -> Self {
+        self.accepted_statuses.push(status);
+        self
+    }
+
+    pub(crate) fn accepts_status(&self, status: u16) -> bool {
+        self.accepted_statuses.contains(&status)
+    }
 }
 
 impl fmt::Debug for RequestSpec {
@@ -831,6 +843,7 @@ impl fmt::Debug for RequestSpec {
             .field("body", &body)
             .field("operation", &self.operation)
             .field("continuation", &self.continuation)
+            .field("accepted_statuses", &self.accepted_statuses)
             .finish()
     }
 }
@@ -1267,11 +1280,13 @@ pub(crate) fn endpoint_url_from_base(
 pub(crate) enum LegacyPageResource<'a> {
     Messages,
     Media { message_sid: &'a str },
+    ShortCodes,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum V1PageResource<'a> {
     Services,
+    TollfreeVerifications,
     PhoneNumbers { service_sid: &'a str },
     ShortCodes { service_sid: &'a str },
     AlphaSenders { service_sid: &'a str },
@@ -1283,6 +1298,7 @@ impl V1PageResource<'_> {
     pub(crate) fn response_key(self) -> &'static str {
         match self {
             Self::Services => "services",
+            Self::TollfreeVerifications => "verifications",
             Self::PhoneNumbers { .. } => "phone_numbers",
             Self::ShortCodes { .. } => "short_codes",
             Self::AlphaSenders { .. } | Self::DestinationAlphaSenders { .. } => "alpha_senders",
@@ -1435,8 +1451,27 @@ fn validate_legacy_page_uri(
                 ));
             }
         }
+        LegacyPageResource::ShortCodes => {
+            if segments.as_slice()
+                != [
+                    "2010-04-01",
+                    "Accounts",
+                    account_sid,
+                    "SMS",
+                    "ShortCodes.json",
+                ]
+            {
+                return Err(TwilioError::InvalidResponseMetadata(
+                    "next_page_uri is not a ShortCodes page for this account".to_owned(),
+                ));
+            }
+        }
     }
-    validate_page_query_keys(page_url, |key| allowed_legacy_page_query_key(key, resource))?;
+    validate_page_query_keys(
+        page_url,
+        |key| allowed_legacy_page_query_key(key, resource),
+        |_key| false,
+    )?;
     Ok(())
 }
 
@@ -1448,6 +1483,7 @@ fn validate_v1_page_url(
     let segments = api_segments(base_url, page_url)?;
     let expected: Vec<&str> = match resource {
         V1PageResource::Services => vec!["Services"],
+        V1PageResource::TollfreeVerifications => vec!["Tollfree", "Verifications"],
         V1PageResource::PhoneNumbers { service_sid } => {
             vec!["Services", service_sid, "PhoneNumbers"]
         }
@@ -1467,13 +1503,22 @@ fn validate_v1_page_url(
             "next_page_url is not a page for this resource".to_owned(),
         ));
     }
-    validate_page_query_keys(page_url, |key| allowed_v1_page_query_key(key, resource))?;
+    validate_page_query_keys(
+        page_url,
+        |key| allowed_v1_page_query_key(key, resource),
+        |key| duplicate_v1_page_query_key_allowed(key, resource),
+    )?;
     Ok(())
 }
 
-fn validate_page_query_keys<F>(page_url: &Url, mut allowed: F) -> Result<(), TwilioError>
+fn validate_page_query_keys<F, G>(
+    page_url: &Url,
+    mut allowed: F,
+    mut duplicate_allowed: G,
+) -> Result<(), TwilioError>
 where
     F: FnMut(&str) -> bool,
+    G: FnMut(&str) -> bool,
 {
     let mut seen = Vec::new();
     for (key, _) in page_url.query_pairs() {
@@ -1482,7 +1527,9 @@ where
                 "page URL has unsupported query parameter {key:?}"
             )));
         }
-        if seen.iter().any(|candidate| candidate == key.as_ref()) {
+        if !duplicate_allowed(key.as_ref())
+            && seen.iter().any(|candidate| candidate == key.as_ref())
+        {
             return Err(TwilioError::InvalidResponseMetadata(format!(
                 "page URL repeated query parameter {key:?}"
             )));
@@ -1508,6 +1555,12 @@ fn allowed_legacy_page_query_key(key: &str, resource: LegacyPageResource<'_>) ->
             key,
             "DateCreated" | "DateCreated<" | "DateCreated>" | "PageSize" | "Page" | "PageToken"
         ),
+        LegacyPageResource::ShortCodes => {
+            matches!(
+                key,
+                "FriendlyName" | "ShortCode" | "PageSize" | "Page" | "PageToken"
+            )
+        }
     }
 }
 
@@ -1515,6 +1568,19 @@ fn allowed_v1_page_query_key(key: &str, resource: V1PageResource<'_>) -> bool {
     matches!(key, "PageSize" | "Page" | "PageToken")
         || matches!(resource, V1PageResource::DestinationAlphaSenders { .. })
             && key == "IsoCountryCode"
+        || matches!(resource, V1PageResource::TollfreeVerifications)
+            && matches!(
+                key,
+                "TollfreePhoneNumberSid"
+                    | "Status"
+                    | "ExternalReferenceId"
+                    | "IncludeSubAccounts"
+                    | "TrustProductSid"
+            )
+}
+
+fn duplicate_v1_page_query_key_allowed(key: &str, resource: V1PageResource<'_>) -> bool {
+    matches!(resource, V1PageResource::TollfreeVerifications) && key == "TrustProductSid"
 }
 
 pub(crate) fn validate_legacy_next_page_continuation(
@@ -1570,12 +1636,21 @@ fn legacy_stable_page_query_keys(resource: LegacyPageResource<'_>) -> &'static [
         LegacyPageResource::Media { .. } => {
             &["DateCreated", "DateCreated<", "DateCreated>", "PageSize"]
         }
+        LegacyPageResource::ShortCodes => &["FriendlyName", "ShortCode", "PageSize"],
     }
 }
 
 fn v1_stable_page_query_keys(resource: V1PageResource<'_>) -> &'static [&'static str] {
     match resource {
         V1PageResource::DestinationAlphaSenders { .. } => &["IsoCountryCode", "PageSize"],
+        V1PageResource::TollfreeVerifications => &[
+            "TollfreePhoneNumberSid",
+            "Status",
+            "ExternalReferenceId",
+            "IncludeSubAccounts",
+            "TrustProductSid",
+            "PageSize",
+        ],
         _ => &["PageSize"],
     }
 }
@@ -2155,6 +2230,17 @@ mod tests {
             .as_str(),
             "https://api.twilio.com/proxy/2010-04-01/Accounts/AC123/Messages/SM123/Media.json?DateCreated%3C=2026-07-01&Page=1"
         );
+        assert_eq!(
+            legacy_page_uri_url_from_base(
+                &base_url,
+                "/2010-04-01/Accounts/AC123/SMS/ShortCodes.json?FriendlyName=Alerts&ShortCode=12345&PageSize=50&Page=1",
+                "AC123",
+                LegacyPageResource::ShortCodes,
+            )
+            .expect("valid account ShortCodes page URI should pass")
+            .as_str(),
+            "https://api.twilio.com/proxy/2010-04-01/Accounts/AC123/SMS/ShortCodes.json?FriendlyName=Alerts&ShortCode=12345&PageSize=50&Page=1"
+        );
 
         for bad in [
             "https://example.test/2010-04-01/Accounts/AC123/Messages.json",
@@ -2176,6 +2262,15 @@ mod tests {
                 "accepted bad uri {bad}"
             );
         }
+        assert!(
+            legacy_page_uri_url_from_base(
+                &base_url,
+                "/2010-04-01/Accounts/AC123/SMS/ShortCodes.json?FriendlyName=Alerts&FriendlyName=Other&Page=1",
+                "AC123",
+                LegacyPageResource::ShortCodes,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2194,6 +2289,16 @@ mod tests {
             .as_str(),
             "https://messaging.twilio.com/v1/proxy/Services/MG123/DestinationAlphaSenders?IsoCountryCode=FR&Page=1"
         );
+        assert_eq!(
+            v1_page_url_from_base(
+                &base_url,
+                "https://messaging.twilio.com/v1/proxy/Tollfree/Verifications?TrustProductSid=BU1&TrustProductSid=BU2&Page=1",
+                V1PageResource::TollfreeVerifications,
+            )
+            .expect("valid Tollfree Verifications page URL should pass")
+            .as_str(),
+            "https://messaging.twilio.com/v1/proxy/Tollfree/Verifications?TrustProductSid=BU1&TrustProductSid=BU2&Page=1"
+        );
 
         for bad in [
             "https://example.test/v1/proxy/Services?Page=1",
@@ -2202,11 +2307,14 @@ mod tests {
             "https://messaging.twilio.com/v1/proxy/Services?Page=1#frag",
             "https://messaging.twilio.com/v1/proxy/Services?Page=1&Page=2",
             "https://messaging.twilio.com/v1/proxy/Services/MG999/PhoneNumbers?Page=1",
+            "https://messaging.twilio.com/v1/proxy/Tollfree/Verifications?Page=1&Page=2",
         ] {
             let resource = if bad.contains("PhoneNumbers") {
                 V1PageResource::PhoneNumbers {
                     service_sid: "MG123",
                 }
+            } else if bad.contains("Tollfree") {
+                V1PageResource::TollfreeVerifications
             } else {
                 V1PageResource::Services
             };
@@ -2284,6 +2392,41 @@ mod tests {
                 V1PageResource::DestinationAlphaSenders {
                     service_sid: "MG123"
                 }
+            )
+            .is_err()
+        );
+
+        let current = v1_page_url_from_base(
+            &messaging_base,
+            "https://messaging.twilio.com/v1/Tollfree/Verifications?TollfreePhoneNumberSid=PN123&Status=TWILIO_APPROVED&ExternalReferenceId=external&IncludeSubAccounts=true&TrustProductSid=BU1&TrustProductSid=BU2&PageSize=50&Page=0",
+            V1PageResource::TollfreeVerifications,
+        )
+        .expect("valid current TFV page URL should pass");
+        let next = v1_page_url_from_base(
+            &messaging_base,
+            "https://messaging.twilio.com/v1/Tollfree/Verifications?TollfreePhoneNumberSid=PN123&Status=TWILIO_APPROVED&ExternalReferenceId=external&IncludeSubAccounts=true&TrustProductSid=BU1&TrustProductSid=BU2&PageSize=50&Page=1&PageToken=abc",
+            V1PageResource::TollfreeVerifications,
+        )
+        .expect("valid next TFV page URL should pass");
+        assert!(
+            validate_v1_next_page_continuation(
+                &current,
+                &next,
+                V1PageResource::TollfreeVerifications
+            )
+            .is_ok()
+        );
+        let changed = v1_page_url_from_base(
+            &messaging_base,
+            "https://messaging.twilio.com/v1/Tollfree/Verifications?TollfreePhoneNumberSid=PN123&Status=TWILIO_APPROVED&ExternalReferenceId=external&IncludeSubAccounts=true&TrustProductSid=BU2&TrustProductSid=BU1&PageSize=50&Page=1&PageToken=abc",
+            V1PageResource::TollfreeVerifications,
+        )
+        .expect("valid changed TFV page URL should parse before continuation check");
+        assert!(
+            validate_v1_next_page_continuation(
+                &current,
+                &changed,
+                V1PageResource::TollfreeVerifications
             )
             .is_err()
         );

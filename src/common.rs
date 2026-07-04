@@ -2,7 +2,7 @@ use std::error::Error as _;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use reqwest::header::{
     AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, HeaderMap, HeaderName,
@@ -13,8 +13,12 @@ use serde::Deserialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::{Iso8601, Rfc2822};
 
+#[cfg(feature = "sensitive-diagnostics")]
+use crate::diagnostics::SensitiveDiagnostics;
+
 pub(crate) const REDACTED: &str = "<redacted>";
 const MAX_DIAGNOSTIC_BODY_BYTES: usize = 2048;
+pub(crate) const TRACE_TARGET: &str = "twilio2::trace";
 
 /// Default Twilio 2010 REST API root, with no trailing slash.
 pub const DEFAULT_REST_BASE_URL: &str = "https://api.twilio.com";
@@ -60,6 +64,28 @@ impl TwilioError {
             | Self::InvalidRequest(_)
             | Self::InvalidResponseMetadata(_)
             | Self::Decode(_) => false,
+        }
+    }
+
+    pub(crate) fn status(&self) -> Option<u16> {
+        match self {
+            Self::Api { status, .. } => Some(*status),
+            Self::InvalidBaseUrl(_)
+            | Self::InvalidRequest(_)
+            | Self::InvalidResponseMetadata(_)
+            | Self::Transport(_)
+            | Self::Decode(_) => None,
+        }
+    }
+
+    pub(crate) fn error_kind(&self) -> &'static str {
+        match self {
+            Self::InvalidBaseUrl(_) => "invalid_base_url",
+            Self::InvalidRequest(_) => "invalid_request",
+            Self::InvalidResponseMetadata(_) => "invalid_response_metadata",
+            Self::Transport(_) => "transport",
+            Self::Api { .. } => "api",
+            Self::Decode(_) => "decode",
         }
     }
 }
@@ -176,15 +202,29 @@ pub struct TwilioClientConfig {
     pub base_urls: TwilioConfig,
     pub timeout: Duration,
     pub user_agent: String,
+    /// Explicitly sensitive request/response diagnostics sink.
+    ///
+    /// This field exists only with the `sensitive-diagnostics` feature. When
+    /// set, it receives raw request/response material for every request made by
+    /// clients built from this config, unless a request-level diagnostics
+    /// override is supplied. The sink itself is redacted from [`Debug`].
+    #[cfg(feature = "sensitive-diagnostics")]
+    pub sensitive_diagnostics: Option<SensitiveDiagnostics>,
 }
 
 impl fmt::Debug for TwilioClientConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TwilioClientConfig")
+        let mut debug = f.debug_struct("TwilioClientConfig");
+        debug
             .field("base_urls", &self.base_urls)
             .field("timeout", &self.timeout)
-            .field("user_agent", &self.user_agent)
-            .finish()
+            .field("user_agent", &self.user_agent);
+        #[cfg(feature = "sensitive-diagnostics")]
+        debug.field(
+            "sensitive_diagnostics",
+            &redacted_optional(self.sensitive_diagnostics.is_some()),
+        );
+        debug.finish()
     }
 }
 
@@ -194,6 +234,8 @@ impl Default for TwilioClientConfig {
             base_urls: TwilioConfig::default(),
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             user_agent: DEFAULT_USER_AGENT.to_owned(),
+            #[cfg(feature = "sensitive-diagnostics")]
+            sensitive_diagnostics: None,
         }
     }
 }
@@ -282,6 +324,27 @@ impl TwilioClientConfig {
     #[must_use]
     pub fn user_agent(mut self, user_agent: impl Into<String>) -> Self {
         self.user_agent = user_agent.into();
+        self
+    }
+
+    /// Attach a client-wide sensitive diagnostics sink.
+    ///
+    /// This is available only with the `sensitive-diagnostics` feature and can
+    /// expose auth tokens, URLs, headers, request bodies, response bodies, and
+    /// raw transport errors to the supplied sink. It is intended for local
+    /// protocol debugging, not production logging.
+    #[cfg(feature = "sensitive-diagnostics")]
+    #[must_use]
+    pub fn with_sensitive_diagnostics(mut self, diagnostics: SensitiveDiagnostics) -> Self {
+        self.sensitive_diagnostics = Some(diagnostics);
+        self
+    }
+
+    /// Remove any client-wide sensitive diagnostics sink.
+    #[cfg(feature = "sensitive-diagnostics")]
+    #[must_use]
+    pub fn without_sensitive_diagnostics(mut self) -> Self {
+        self.sensitive_diagnostics = None;
         self
     }
 }
@@ -495,6 +558,9 @@ pub struct RequestOptions {
     pub(crate) retry: Option<RetryPolicy>,
     pub(crate) headers: Vec<(String, String)>,
     pub(crate) query: Vec<(String, String)>,
+    pub(crate) trace_label: Option<String>,
+    #[cfg(feature = "sensitive-diagnostics")]
+    pub(crate) sensitive_diagnostics: Option<SensitiveDiagnostics>,
     validation_error: Option<String>,
 }
 
@@ -610,6 +676,35 @@ impl RequestOptions {
         self
     }
 
+    /// Attach a caller-provided safe correlation label to twilio2 tracing
+    /// events.
+    ///
+    /// The label is emitted only by this crate's structured tracing
+    /// instrumentation after it is checked against known sensitive request
+    /// values. It is not sent over the wire and is redacted from
+    /// [`Debug`](fmt::Debug). Pass an empty string to clear a previously set
+    /// label. Only put values here that are already safe for your logs.
+    #[must_use]
+    pub fn trace_label(mut self, label: impl Into<String>) -> Self {
+        let label = label.into();
+        self.trace_label = if label.is_empty() { None } else { Some(label) };
+        self
+    }
+
+    /// Override the client-wide sensitive diagnostics sink for this request.
+    ///
+    /// This is available only with the `sensitive-diagnostics` feature and can
+    /// expose auth tokens, URLs, headers, request bodies, response bodies, and
+    /// raw transport errors to the supplied sink. Use
+    /// [`SensitiveDiagnostics::noop`] to disable a client-wide diagnostics sink
+    /// for one request.
+    #[cfg(feature = "sensitive-diagnostics")]
+    #[must_use]
+    pub fn sensitive_diagnostics(mut self, diagnostics: SensitiveDiagnostics) -> Self {
+        self.sensitive_diagnostics = Some(diagnostics);
+        self
+    }
+
     pub(crate) fn retry_or_default(&self) -> RetryPolicy {
         self.retry.unwrap_or_default()
     }
@@ -641,7 +736,8 @@ impl RequestOptions {
 
 impl fmt::Debug for RequestOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RequestOptions")
+        let mut debug = f.debug_struct("RequestOptions");
+        debug
             .field(
                 "rest_base_url",
                 &if self.rest_base_url.is_some() {
@@ -666,10 +762,19 @@ impl fmt::Debug for RequestOptions {
             )
             .field("query", &format_args!("[{REDACTED}; {}]", self.query.len()))
             .field(
+                "trace_label",
+                &redacted_optional(self.trace_label.is_some()),
+            )
+            .field(
                 "validation_error",
                 &self.validation_error.as_ref().map(|_| REDACTED),
-            )
-            .finish()
+            );
+        #[cfg(feature = "sensitive-diagnostics")]
+        debug.field(
+            "sensitive_diagnostics",
+            &redacted_optional(self.sensitive_diagnostics.is_some()),
+        );
+        debug.finish()
     }
 }
 
@@ -1155,16 +1260,56 @@ pub(crate) fn api_error_from_text(
     }
 }
 
-pub(crate) async fn api_error_from_response(
-    response: reqwest::Response,
+pub(crate) struct LimitedResponseBody {
+    pub(crate) body: Vec<u8>,
+    pub(crate) complete: bool,
+}
+
+pub(crate) async fn read_limited_response_body(
+    mut response: reqwest::Response,
+) -> Result<LimitedResponseBody, reqwest::Error> {
+    let mut body = Vec::new();
+    while body.len() <= MAX_DIAGNOSTIC_BODY_BYTES {
+        let Some(chunk) = response.chunk().await? else {
+            return Ok(LimitedResponseBody {
+                body,
+                complete: true,
+            });
+        };
+        let remaining = MAX_DIAGNOSTIC_BODY_BYTES + 1 - body.len();
+        if chunk.len() > remaining {
+            body.extend_from_slice(&chunk[..remaining]);
+            return Ok(LimitedResponseBody {
+                body,
+                complete: false,
+            });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(LimitedResponseBody {
+        body,
+        complete: false,
+    })
+}
+
+pub(crate) fn api_error_from_body(
     status: u16,
+    body: &[u8],
     sensitive_values: &[&str],
 ) -> TwilioError {
-    let body = match read_limited_response_text(response).await {
-        Ok(body) => body,
-        Err(e) => reqwest_error_message(&e),
-    };
-    api_error_from_text(status, body, sensitive_values)
+    api_error_from_text(
+        status,
+        String::from_utf8_lossy(body).into_owned(),
+        sensitive_values,
+    )
+}
+
+pub(crate) fn api_error_from_body_read_error(
+    status: u16,
+    error: &reqwest::Error,
+    sensitive_values: &[&str],
+) -> TwilioError {
+    api_error_from_text(status, reqwest_error_message(error), sensitive_values)
 }
 
 pub(crate) fn transport_error(e: &reqwest::Error, sensitive_values: &[&str]) -> TwilioError {
@@ -1189,24 +1334,6 @@ fn reqwest_error_message(e: &reqwest::Error) -> String {
     msg
 }
 
-async fn read_limited_response_text(
-    mut response: reqwest::Response,
-) -> Result<String, reqwest::Error> {
-    let mut body = Vec::new();
-    while body.len() <= MAX_DIAGNOSTIC_BODY_BYTES {
-        let Some(chunk) = response.chunk().await? else {
-            break;
-        };
-        let remaining = MAX_DIAGNOSTIC_BODY_BYTES + 1 - body.len();
-        if chunk.len() > remaining {
-            body.extend_from_slice(&chunk[..remaining]);
-            break;
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(String::from_utf8_lossy(&body).into_owned())
-}
-
 fn truncate(s: String) -> String {
     if s.len() > MAX_DIAGNOSTIC_BODY_BYTES {
         let mut end = MAX_DIAGNOSTIC_BODY_BYTES;
@@ -1222,14 +1349,254 @@ fn truncate(s: String) -> String {
     }
 }
 
-pub(crate) fn request_span(base_url: &Url, operation: &'static str, method: &str) -> tracing::Span {
-    let peer_name = base_url.host_str().unwrap_or("<unknown>");
-    tracing::debug_span!(
-        "twilio2.request",
-        operation,
-        http.method = method,
-        net.peer.name = %peer_name
-    )
+macro_rules! trace_debug {
+    ($trace_label:expr, $($field:tt)*) => {
+        if let Some(trace_label) = $trace_label {
+            tracing::debug!(target: TRACE_TARGET, trace_label, $($field)*);
+        } else {
+            tracing::debug!(target: TRACE_TARGET, $($field)*);
+        }
+    };
+}
+
+macro_rules! trace_warn {
+    ($trace_label:expr, $($field:tt)*) => {
+        if let Some(trace_label) = $trace_label {
+            tracing::warn!(target: TRACE_TARGET, trace_label, $($field)*);
+        } else {
+            tracing::warn!(target: TRACE_TARGET, $($field)*);
+        }
+    };
+}
+
+pub(crate) struct OperationTrace {
+    operation: &'static str,
+    max_retries: u32,
+    trace_label: Option<String>,
+    start: Instant,
+}
+
+impl OperationTrace {
+    pub(crate) fn new(
+        operation: &'static str,
+        max_retries: u32,
+        trace_label: Option<&str>,
+        sensitive_values: &[&str],
+    ) -> Self {
+        Self {
+            operation,
+            max_retries,
+            trace_label: safe_trace_label(trace_label, sensitive_values).map(ToOwned::to_owned),
+            start: Instant::now(),
+        }
+    }
+
+    pub(crate) fn success(&self, method: &str, attempts: u32, status: u16) {
+        trace_debug!(
+            self.trace_label.as_deref(),
+            event = "twilio2.operation.success",
+            method,
+            operation = self.operation,
+            attempts,
+            max_retries = self.max_retries,
+            status,
+            elapsed_ms = duration_ms(self.start.elapsed()),
+        );
+    }
+
+    pub(crate) fn failure(
+        &self,
+        method: &str,
+        attempts: u32,
+        status: Option<u16>,
+        error: &TwilioError,
+    ) {
+        let elapsed_ms = duration_ms(self.start.elapsed());
+        let error_kind = error.error_kind();
+        let status = status.or_else(|| error.status());
+        match status {
+            Some(status) => trace_warn!(
+                self.trace_label.as_deref(),
+                event = "twilio2.operation.failure",
+                method,
+                operation = self.operation,
+                attempts,
+                max_retries = self.max_retries,
+                elapsed_ms,
+                error_kind,
+                status,
+            ),
+            None => trace_warn!(
+                self.trace_label.as_deref(),
+                event = "twilio2.operation.failure",
+                method,
+                operation = self.operation,
+                attempts,
+                max_retries = self.max_retries,
+                elapsed_ms,
+                error_kind,
+            ),
+        }
+    }
+
+    pub(crate) fn retry(
+        &self,
+        method: &str,
+        attempt: u32,
+        next_attempt: u32,
+        delay: Duration,
+        error: &TwilioError,
+    ) {
+        let delay_ms = duration_ms(delay);
+        let delay_source = "backoff";
+        let error_kind = error.error_kind();
+        match error.status() {
+            Some(status) => trace_warn!(
+                self.trace_label.as_deref(),
+                event = "twilio2.request.retry",
+                method,
+                operation = self.operation,
+                attempt,
+                next_attempt,
+                max_retries = self.max_retries,
+                delay_ms,
+                delay_source,
+                error_kind,
+                status,
+            ),
+            None => trace_warn!(
+                self.trace_label.as_deref(),
+                event = "twilio2.request.retry",
+                method,
+                operation = self.operation,
+                attempt,
+                next_attempt,
+                max_retries = self.max_retries,
+                delay_ms,
+                delay_source,
+                error_kind,
+            ),
+        }
+    }
+}
+
+pub(crate) struct AttemptTrace<'a> {
+    method: &'a str,
+    operation: &'static str,
+    attempt: u32,
+    max_retries: u32,
+    trace_label: Option<&'a str>,
+}
+
+impl<'a> AttemptTrace<'a> {
+    pub(crate) fn new(
+        method: &'a str,
+        operation: &'static str,
+        attempt: u32,
+        max_retries: u32,
+        trace_label: Option<&'a str>,
+        sensitive_values: &[&str],
+    ) -> Self {
+        Self {
+            method,
+            operation,
+            attempt,
+            max_retries,
+            trace_label: safe_trace_label(trace_label, sensitive_values),
+        }
+    }
+}
+
+pub(crate) fn attempt_span(trace: &AttemptTrace<'_>) -> tracing::Span {
+    if let Some(trace_label) = trace.trace_label {
+        tracing::info_span!(
+            target: TRACE_TARGET,
+            "twilio2.request",
+            method = trace.method,
+            operation = trace.operation,
+            attempt = trace.attempt,
+            max_retries = trace.max_retries,
+            trace_label,
+            status = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty,
+        )
+    } else {
+        tracing::info_span!(
+            target: TRACE_TARGET,
+            "twilio2.request",
+            method = trace.method,
+            operation = trace.operation,
+            attempt = trace.attempt,
+            max_retries = trace.max_retries,
+            status = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty,
+        )
+    }
+}
+
+pub(crate) fn attempt_response(
+    span: &tracing::Span,
+    trace: &AttemptTrace<'_>,
+    status: u16,
+    elapsed: Duration,
+) {
+    let elapsed_ms = duration_ms(elapsed);
+    span.record("status", status);
+    span.record("elapsed_ms", elapsed_ms);
+    trace_debug!(
+        trace.trace_label,
+        event = "twilio2.request.attempt.response",
+        method = trace.method,
+        operation = trace.operation,
+        attempt = trace.attempt,
+        max_retries = trace.max_retries,
+        status,
+        elapsed_ms,
+    );
+}
+
+pub(crate) fn attempt_error(
+    span: &tracing::Span,
+    trace: &AttemptTrace<'_>,
+    elapsed: Duration,
+    error: &TwilioError,
+) {
+    let elapsed_ms = duration_ms(elapsed);
+    span.record("elapsed_ms", elapsed_ms);
+    trace_warn!(
+        trace.trace_label,
+        event = "twilio2.request.attempt.error",
+        method = trace.method,
+        operation = trace.operation,
+        attempt = trace.attempt,
+        max_retries = trace.max_retries,
+        elapsed_ms,
+        error_kind = error.error_kind(),
+    );
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn safe_trace_label<'a>(label: Option<&'a str>, sensitive_values: &[&str]) -> Option<&'a str> {
+    let label = label?;
+    if sensitive_values
+        .iter()
+        .any(|value| !value.is_empty() && label.contains(value))
+    {
+        None
+    } else {
+        Some(label)
+    }
+}
+
+pub(crate) fn request_span(
+    _base_url: &Url,
+    _operation: &'static str,
+    _method: &str,
+) -> tracing::Span {
+    tracing::Span::none()
 }
 
 pub(crate) fn normalize_base_url(raw: &str) -> Result<Url, String> {
@@ -1755,6 +2122,20 @@ pub(crate) fn redacted_option(value: &Option<String>) -> Option<&str> {
     value.as_deref().map(redacted_str)
 }
 
+pub(crate) fn redacted_optional(is_some: bool) -> impl fmt::Debug {
+    struct RedactedOptional(bool);
+    impl fmt::Debug for RedactedOptional {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            if self.0 {
+                f.write_str("Some(<redacted>)")
+            } else {
+                f.write_str("None")
+            }
+        }
+    }
+    RedactedOptional(is_some)
+}
+
 pub(crate) fn sanitize_diagnostic(s: String, sensitive_values: &[&str]) -> String {
     let s = redact_known_values(s, sensitive_values);
     let s = redact_sensitive_key_values(&s);
@@ -2104,6 +2485,9 @@ fn is_auth_scheme_boundary(s: &str, i: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "sensitive-diagnostics")]
+    use crate::diagnostics::SensitiveDiagnostics;
+
     use super::{
         LegacyPageResource, RequestOptions, RetryPolicy, TwilioClientConfig, TwilioConfig,
         TwilioError, V1PageResource, endpoint_url_from_base, legacy_page_uri_url_from_base,
@@ -2185,6 +2569,34 @@ mod tests {
             .try_header("content-type", "application/json")
             .expect_err("content-type override should be rejected");
         assert!(matches!(err, TwilioError::InvalidRequest(_)));
+    }
+
+    #[test]
+    fn request_options_trace_label_empty_clears_and_debug_redacts() {
+        let options = RequestOptions::new().trace_label("trace-secret");
+        assert_eq!(options.trace_label.as_deref(), Some("trace-secret"));
+        let rendered = format!("{options:?}");
+        assert!(!rendered.contains("trace-secret"));
+        assert!(rendered.contains("<redacted>"));
+
+        let cleared = options.trace_label("");
+        assert_eq!(cleared.trace_label, None);
+        assert!(!format!("{cleared:?}").contains("trace-secret"));
+    }
+
+    #[cfg(feature = "sensitive-diagnostics")]
+    #[test]
+    fn sensitive_diagnostics_config_and_options_debug_are_redacted() {
+        let config =
+            TwilioClientConfig::new().with_sensitive_diagnostics(SensitiveDiagnostics::noop());
+        let rendered = format!("{config:?}");
+        assert!(rendered.contains("sensitive_diagnostics"));
+        assert!(rendered.contains("<redacted>"));
+
+        let options = RequestOptions::new().sensitive_diagnostics(SensitiveDiagnostics::noop());
+        let rendered = format!("{options:?}");
+        assert!(rendered.contains("sensitive_diagnostics"));
+        assert!(rendered.contains("<redacted>"));
     }
 
     #[test]

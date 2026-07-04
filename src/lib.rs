@@ -180,6 +180,8 @@ compile_error!(
 mod client;
 mod common;
 mod deactivations;
+#[cfg(feature = "sensitive-diagnostics")]
+mod diagnostics;
 mod messages;
 mod services;
 mod short_codes;
@@ -193,6 +195,12 @@ pub use common::{
     TwilioPaginator, V1PageMeta, decode_json_response,
 };
 pub use deactivations::{DeactivationsResource, FetchDeactivationsRequest, TwilioDeactivation};
+#[cfg(feature = "sensitive-diagnostics")]
+pub use diagnostics::{
+    SensitiveDiagnosticEvent, SensitiveDiagnosticSink, SensitiveDiagnostics,
+    SensitiveDiagnosticsBuilder, SensitiveRequestSnapshot, SensitiveResponseSnapshot,
+    SensitiveTransportErrorSnapshot, SensitiveTransportErrorStage,
+};
 pub use messages::{
     AddressRetention, ContentRetention, CreateMessageFeedbackRequest, CreateMessageRequest,
     ListMediaRequest, ListMessagesRequest, MessageFeedbackOutcome, MessageFeedbackResource,

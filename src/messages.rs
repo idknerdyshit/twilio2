@@ -433,8 +433,8 @@ impl<'a> CreateMessageRequest<'a> {
         params
     }
 
-    pub(crate) fn sensitive_values(&self, creds: TwilioCreds<'a>) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid, creds.auth_token, self.to];
+    pub(crate) fn sensitive_values(&self, creds: &'a TwilioCreds) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_token(), self.to];
         push_sensitive(&mut values, self.from);
         push_sensitive(&mut values, self.messaging_service_sid);
         push_sensitive(&mut values, self.body);
@@ -550,8 +550,8 @@ impl<'a> ListMessagesRequest<'a> {
         }
     }
 
-    pub(crate) fn sensitive_values(&self, creds: TwilioCreds<'a>) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid, creds.auth_token];
+    pub(crate) fn sensitive_values(&self, creds: &'a TwilioCreds) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_token()];
         push_sensitive(&mut values, self.to);
         push_sensitive(&mut values, self.from);
         push_sensitive(&mut values, self.date_sent);
@@ -631,8 +631,8 @@ impl<'a> UpdateMessageRequest<'a> {
         params
     }
 
-    pub(crate) fn sensitive_values(&self, creds: TwilioCreds<'a>, sid: &'a str) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid, creds.auth_token, sid];
+    pub(crate) fn sensitive_values(&self, creds: &'a TwilioCreds, sid: &'a str) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_token(), sid];
         push_sensitive(&mut values, self.body);
         values
     }
@@ -719,10 +719,10 @@ impl<'a> ListMediaRequest<'a> {
 
     pub(crate) fn sensitive_values(
         &self,
-        creds: TwilioCreds<'a>,
+        creds: &'a TwilioCreds,
         message_sid: &'a str,
     ) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid, creds.auth_token, message_sid];
+        let mut values = vec![creds.account_sid(), creds.auth_token(), message_sid];
         push_sensitive(&mut values, self.date_created);
         push_sensitive(&mut values, self.date_created_before);
         push_sensitive(&mut values, self.date_created_after);
@@ -1142,7 +1142,7 @@ impl<'a> MessagesResource<'a> {
                 [
                     "2010-04-01",
                     "Accounts",
-                    self.account.creds.account_sid,
+                    self.account.creds.account_sid(),
                     "Messages.json",
                 ],
             )
@@ -1176,7 +1176,7 @@ impl<'a> MessagesResource<'a> {
             let mut url = self.account.client.rest_endpoint(&[
                 "2010-04-01",
                 "Accounts",
-                self.account.creds.account_sid,
+                self.account.creds.account_sid(),
                 "Messages.json",
             ])?;
             request.apply_query(&mut url);
@@ -1206,13 +1206,13 @@ impl<'a> MessagesResource<'a> {
     ) -> Result<TwilioMessagePage, TwilioError> {
         async move {
             let sensitive_values = vec![
-                self.account.creds.account_sid,
-                self.account.creds.auth_token,
+                self.account.creds.account_sid(),
+                self.account.creds.auth_token(),
                 next_page_uri,
             ];
             let url = self.account.client.legacy_page_url(
                 next_page_uri,
-                self.account.creds.account_sid,
+                self.account.creds.account_sid(),
                 LegacyPageResource::Messages,
             )?;
             let spec = RequestSpec::from_url(
@@ -1243,7 +1243,7 @@ impl<'a> MessagesResource<'a> {
         if let Some(next_page_uri) = page.next_page_uri.as_ref() {
             let next_url = self.account.client.legacy_page_url(
                 next_page_uri,
-                self.account.creds.account_sid,
+                self.account.creds.account_sid(),
                 LegacyPageResource::Messages,
             )?;
             if let Some(current_url) = current_url {
@@ -1314,8 +1314,8 @@ impl<'a> MessageResource<'a> {
     pub async fn fetch(self) -> Result<TwilioMessage, TwilioError> {
         async move {
             let sensitive_values = vec![
-                self.account.creds.account_sid,
-                self.account.creds.auth_token,
+                self.account.creds.account_sid(),
+                self.account.creds.auth_token(),
                 self.sid,
             ];
             let spec = self.message_spec(Method::GET, "message.fetch")?;
@@ -1366,8 +1366,8 @@ impl<'a> MessageResource<'a> {
     pub async fn delete(self) -> Result<(), TwilioError> {
         async move {
             let sensitive_values = vec![
-                self.account.creds.account_sid,
-                self.account.creds.auth_token,
+                self.account.creds.account_sid(),
+                self.account.creds.auth_token(),
                 self.sid,
             ];
             let spec = self.message_spec(Method::DELETE, "message.delete")?;
@@ -1397,7 +1397,7 @@ impl<'a> MessageResource<'a> {
         self.account.client.rest_endpoint(&[
             "2010-04-01",
             "Accounts",
-            self.account.creds.account_sid,
+            self.account.creds.account_sid(),
             "Messages",
             &format!("{}.json", self.sid),
         ])
@@ -1497,7 +1497,7 @@ impl<'a> MessageMediaResource<'a> {
             let mut url = self.message.account.client.rest_endpoint(&[
                 "2010-04-01",
                 "Accounts",
-                self.message.account.creds.account_sid,
+                self.message.account.creds.account_sid(),
                 "Messages",
                 self.message.sid,
                 "Media.json",
@@ -1534,14 +1534,14 @@ impl<'a> MessageMediaResource<'a> {
     pub async fn list_page_uri(self, next_page_uri: &str) -> Result<TwilioMediaPage, TwilioError> {
         async move {
             let sensitive_values = vec![
-                self.message.account.creds.account_sid,
-                self.message.account.creds.auth_token,
+                self.message.account.creds.account_sid(),
+                self.message.account.creds.auth_token(),
                 self.message.sid,
                 next_page_uri,
             ];
             let url = self.message.account.client.legacy_page_url(
                 next_page_uri,
-                self.message.account.creds.account_sid,
+                self.message.account.creds.account_sid(),
                 LegacyPageResource::Media {
                     message_sid: self.message.sid,
                 },
@@ -1603,7 +1603,7 @@ impl<'a> MessageMediaResource<'a> {
             };
             let next_url = self.message.account.client.legacy_page_url(
                 next_page_uri,
-                self.message.account.creds.account_sid,
+                self.message.account.creds.account_sid(),
                 resource,
             )?;
             if let Some(current_url) = current_url {
@@ -1615,8 +1615,8 @@ impl<'a> MessageMediaResource<'a> {
 
     fn sensitive_values(self, media_sid: &'a str) -> Vec<&'a str> {
         vec![
-            self.message.account.creds.account_sid,
-            self.message.account.creds.auth_token,
+            self.message.account.creds.account_sid(),
+            self.message.account.creds.auth_token(),
             self.message.sid,
             media_sid,
         ]
@@ -1631,7 +1631,7 @@ impl<'a> MessageMediaResource<'a> {
         self.message.account.client.rest_endpoint(&[
             "2010-04-01",
             "Accounts",
-            self.message.account.creds.account_sid,
+            self.message.account.creds.account_sid(),
             "Messages",
             self.message.sid,
             "Media",
@@ -1709,15 +1709,15 @@ impl MessageFeedbackResource<'_> {
     ) -> Result<TwilioMessageFeedback, TwilioError> {
         async move {
             let sensitive_values = vec![
-                self.message.account.creds.account_sid,
-                self.message.account.creds.auth_token,
+                self.message.account.creds.account_sid(),
+                self.message.account.creds.auth_token(),
                 self.message.sid,
             ];
             let form_params = request.form_params();
             let url = self.message.account.client.rest_endpoint(&[
                 "2010-04-01",
                 "Accounts",
-                self.message.account.creds.account_sid,
+                self.message.account.creds.account_sid(),
                 "Messages",
                 self.message.sid,
                 "Feedback.json",
@@ -1778,7 +1778,7 @@ impl<'a> BlockingMessagesResource<'a> {
                 [
                     "2010-04-01",
                     "Accounts",
-                    self.account.creds.account_sid,
+                    self.account.creds.account_sid(),
                     "Messages.json",
                 ],
             )
@@ -1808,7 +1808,7 @@ impl<'a> BlockingMessagesResource<'a> {
             let mut url = self.account.client.rest_endpoint(&[
                 "2010-04-01",
                 "Accounts",
-                self.account.creds.account_sid,
+                self.account.creds.account_sid(),
                 "Messages.json",
             ])?;
             request.apply_query(&mut url);
@@ -1834,13 +1834,13 @@ impl<'a> BlockingMessagesResource<'a> {
         )
         .in_scope(|| {
             let sensitive_values = vec![
-                self.account.creds.account_sid,
-                self.account.creds.auth_token,
+                self.account.creds.account_sid(),
+                self.account.creds.auth_token(),
                 next_page_uri,
             ];
             let url = self.account.client.legacy_page_url(
                 next_page_uri,
-                self.account.creds.account_sid,
+                self.account.creds.account_sid(),
                 LegacyPageResource::Messages,
             )?;
             let spec = RequestSpec::from_url(
@@ -1865,7 +1865,7 @@ impl<'a> BlockingMessagesResource<'a> {
         if let Some(next_page_uri) = page.next_page_uri.as_ref() {
             let next_url = self.account.client.legacy_page_url(
                 next_page_uri,
-                self.account.creds.account_sid,
+                self.account.creds.account_sid(),
                 LegacyPageResource::Messages,
             )?;
             if let Some(current_url) = current_url {
@@ -1935,8 +1935,8 @@ impl<'a> BlockingMessageResource<'a> {
         )
         .in_scope(|| {
             let sensitive_values = vec![
-                self.account.creds.account_sid,
-                self.account.creds.auth_token,
+                self.account.creds.account_sid(),
+                self.account.creds.auth_token(),
                 self.sid,
             ];
             let spec = self.message_spec(Method::GET, "message.fetch")?;
@@ -1981,8 +1981,8 @@ impl<'a> BlockingMessageResource<'a> {
         )
         .in_scope(|| {
             let sensitive_values = vec![
-                self.account.creds.account_sid,
-                self.account.creds.auth_token,
+                self.account.creds.account_sid(),
+                self.account.creds.auth_token(),
                 self.sid,
             ];
             let spec = self.message_spec(Method::DELETE, "message.delete")?;
@@ -2006,7 +2006,7 @@ impl<'a> BlockingMessageResource<'a> {
         self.account.client.rest_endpoint(&[
             "2010-04-01",
             "Accounts",
-            self.account.creds.account_sid,
+            self.account.creds.account_sid(),
             "Messages",
             &format!("{}.json", self.sid),
         ])
@@ -2107,7 +2107,7 @@ impl<'a> BlockingMessageMediaResource<'a> {
             let mut url = self.message.account.client.rest_endpoint(&[
                 "2010-04-01",
                 "Accounts",
-                self.message.account.creds.account_sid,
+                self.message.account.creds.account_sid(),
                 "Messages",
                 self.message.sid,
                 "Media.json",
@@ -2142,14 +2142,14 @@ impl<'a> BlockingMessageMediaResource<'a> {
         )
         .in_scope(|| {
             let sensitive_values = vec![
-                self.message.account.creds.account_sid,
-                self.message.account.creds.auth_token,
+                self.message.account.creds.account_sid(),
+                self.message.account.creds.auth_token(),
                 self.message.sid,
                 next_page_uri,
             ];
             let url = self.message.account.client.legacy_page_url(
                 next_page_uri,
-                self.message.account.creds.account_sid,
+                self.message.account.creds.account_sid(),
                 LegacyPageResource::Media {
                     message_sid: self.message.sid,
                 },
@@ -2202,7 +2202,7 @@ impl<'a> BlockingMessageMediaResource<'a> {
             };
             let next_url = self.message.account.client.legacy_page_url(
                 next_page_uri,
-                self.message.account.creds.account_sid,
+                self.message.account.creds.account_sid(),
                 resource,
             )?;
             if let Some(current_url) = current_url {
@@ -2214,8 +2214,8 @@ impl<'a> BlockingMessageMediaResource<'a> {
 
     fn sensitive_values(self, media_sid: &'a str) -> Vec<&'a str> {
         vec![
-            self.message.account.creds.account_sid,
-            self.message.account.creds.auth_token,
+            self.message.account.creds.account_sid(),
+            self.message.account.creds.auth_token(),
             self.message.sid,
             media_sid,
         ]
@@ -2230,7 +2230,7 @@ impl<'a> BlockingMessageMediaResource<'a> {
         self.message.account.client.rest_endpoint(&[
             "2010-04-01",
             "Accounts",
-            self.message.account.creds.account_sid,
+            self.message.account.creds.account_sid(),
             "Messages",
             self.message.sid,
             "Media",
@@ -2307,14 +2307,14 @@ impl BlockingMessageFeedbackResource<'_> {
         )
         .in_scope(|| {
             let sensitive_values = vec![
-                self.message.account.creds.account_sid,
-                self.message.account.creds.auth_token,
+                self.message.account.creds.account_sid(),
+                self.message.account.creds.auth_token(),
                 self.message.sid,
             ];
             let url = self.message.account.client.rest_endpoint(&[
                 "2010-04-01",
                 "Accounts",
-                self.message.account.creds.account_sid,
+                self.message.account.creds.account_sid(),
                 "Messages",
                 self.message.sid,
                 "Feedback.json",

@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use rcgen::CertifiedKey;
@@ -301,11 +301,9 @@ fn install_test_crypto_provider() {
 #[cfg(not(feature = "rustls-no-provider"))]
 fn install_test_crypto_provider() {}
 
-fn test_creds() -> TwilioCreds<'static> {
-    TwilioCreds {
-        account_sid: "AC123",
-        auth_token: "token",
-    }
+fn test_creds() -> &'static TwilioCreds {
+    static CREDS: LazyLock<TwilioCreds> = LazyLock::new(|| TwilioCreds::new("AC123", "token"));
+    &CREDS
 }
 
 fn client_for(server: &HttpsMockServer) -> TwilioClient {

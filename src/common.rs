@@ -7,6 +7,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(any(feature = "async", feature = "sync"))]
+use base64::Engine as _;
 use http::Method;
 use http::header::{
     AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, HeaderMap, HeaderName,
@@ -16,9 +18,11 @@ use serde::Deserialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::{Iso8601, Rfc2822};
 use url::Url;
+use zeroize::Zeroizing;
 
 #[cfg(feature = "sensitive-diagnostics")]
 use crate::diagnostics::SensitiveDiagnostics;
+use crate::secret::Secret;
 
 pub(crate) const REDACTED: &str = "<redacted>";
 const MAX_DIAGNOSTIC_BODY_BYTES: usize = 2048;
@@ -94,19 +98,54 @@ impl TwilioError {
     }
 }
 
-/// Credentials for one account-scoped API handle. Borrowed and never stored on
-/// [`crate::TwilioClient`].
-#[derive(Clone, Copy)]
-pub struct TwilioCreds<'a> {
-    pub account_sid: &'a str,
-    pub auth_token: &'a str,
+/// Credentials for one account-scoped API handle. Owned by the caller and never
+/// stored on [`crate::TwilioClient`].
+///
+/// Pass `&TwilioCreds` to [`crate::TwilioClient::account`] or, with the `sync`
+/// feature, `BlockingTwilioClient::account`. The credential buffers are
+/// redacted in [`Debug`](std::fmt::Debug) and the buffers owned by this value
+/// are zeroized when dropped. Caller-owned source strings and transport-created
+/// header copies are outside that guarantee.
+#[derive(Clone)]
+pub struct TwilioCreds {
+    account_sid: Secret<String>,
+    auth_token: Secret<String>,
 }
 
-impl std::fmt::Debug for TwilioCreds<'_> {
+impl TwilioCreds {
+    /// Create credentials from an account SID and auth token.
+    pub fn new(
+        account_sid: impl Into<Secret<String>>,
+        auth_token: impl Into<Secret<String>>,
+    ) -> Self {
+        Self {
+            account_sid: account_sid.into(),
+            auth_token: auth_token.into(),
+        }
+    }
+
+    pub(crate) fn account_sid(&self) -> &str {
+        self.account_sid.expose().as_str()
+    }
+
+    pub(crate) fn auth_token(&self) -> &str {
+        self.auth_token.expose().as_str()
+    }
+
+    #[cfg(any(feature = "async", feature = "sync"))]
+    pub(crate) fn basic_auth_header(&self) -> Secret<String> {
+        let token = Zeroizing::new(format!("{}:{}", self.account_sid(), self.auth_token()));
+        let mut header = String::from("Basic ");
+        base64::engine::general_purpose::STANDARD.encode_string(token.as_bytes(), &mut header);
+        Secret::new(header)
+    }
+}
+
+impl std::fmt::Debug for TwilioCreds {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TwilioCreds")
-            .field("account_sid", &redacted_str(self.account_sid))
-            .field("auth_token", &REDACTED)
+            .field("account_sid", &self.account_sid)
+            .field("auth_token", &self.auth_token)
             .finish()
     }
 }
@@ -150,7 +189,7 @@ impl TwilioConfig {
     ///
     /// Reads `TWILIO_REST_BASE_URL` and `TWILIO_MESSAGING_BASE_URL` when they
     /// are present and non-empty. Account credentials are intentionally not read
-    /// here; pass them to [`crate::TwilioClient::account`] as [`TwilioCreds`].
+    /// here; pass a [`TwilioCreds`] reference to [`crate::TwilioClient::account`].
     ///
     /// # Errors
     ///
@@ -1080,6 +1119,10 @@ pub trait Operation {
         raw: RawResponse,
         sensitive_values: &[&str],
     ) -> Result<Self::Output, TwilioError>;
+}
+
+pub(crate) fn owned_sensitive_values(operation_values: Vec<String>) -> Zeroizing<Vec<String>> {
+    Zeroizing::new(operation_values)
 }
 
 #[cfg(feature = "async")]
@@ -2654,9 +2697,10 @@ mod tests {
 
     use super::{
         LegacyPageResource, RequestOptions, RetryPolicy, TwilioClientConfig, TwilioConfig,
-        TwilioError, V1PageResource, endpoint_url_from_base, legacy_page_uri_url_from_base,
-        normalize_base_url, sanitize_diagnostic, v1_page_url_from_base,
-        validate_legacy_next_page_continuation, validate_v1_next_page_continuation,
+        TwilioCreds, TwilioError, V1PageResource, endpoint_url_from_base,
+        legacy_page_uri_url_from_base, normalize_base_url, sanitize_diagnostic,
+        v1_page_url_from_base, validate_legacy_next_page_continuation,
+        validate_v1_next_page_continuation,
     };
     use std::time::Duration;
 
@@ -2714,6 +2758,29 @@ mod tests {
         let err = TwilioClientConfig::from_env_values(None, None, Some("0".to_owned()), None)
             .expect_err("zero timeout should fail");
         assert!(matches!(err, TwilioError::InvalidRequest(_)));
+    }
+
+    #[test]
+    fn twilio_creds_debug_redacts_owned_secrets() {
+        let creds = TwilioCreds::new("ACdebug-secret", "auth-token-secret");
+        let rendered = format!("{creds:?}");
+
+        assert!(!rendered.contains("ACdebug-secret"));
+        assert!(!rendered.contains("auth-token-secret"));
+        assert!(rendered.contains("<redacted>"));
+    }
+
+    #[test]
+    fn twilio_creds_accepts_secret_values() {
+        let creds = TwilioCreds::new(
+            crate::Secret::from("ACdirect-secret"),
+            crate::Secret::new("direct-auth-token-secret".to_owned()),
+        );
+        let rendered = format!("{creds:?}");
+
+        assert!(!rendered.contains("ACdirect-secret"));
+        assert!(!rendered.contains("direct-auth-token-secret"));
+        assert!(rendered.contains("<redacted>"));
     }
 
     #[test]

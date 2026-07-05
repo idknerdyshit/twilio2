@@ -16,7 +16,7 @@ It covers:
 
 The client stores only shared transport state and parsed base URLs. Account SID
 and Auth Token values are passed through `TwilioCreds` to an account-scoped
-handle; the auth token is redacted from `Debug` output. API-key authentication,
+handle; both credential values are redacted from `Debug` output. API-key authentication,
 inbound webhook parsing, signature verification, A2P Compliance resources, and
 higher-level provider traits are intentionally outside this crate.
 
@@ -60,26 +60,25 @@ least one of `async`/`sync` and at least one TLS backend.
 Version `0.2` uses account/resource builders throughout. Construct a client with
 `TwilioClient::from_config`, `TwilioClient::from_http_client`, or
 `TwilioClient::try_with_config`, then call resource methods such as
-`client.account(creds).messages().create(...)`. `TwilioClient` never stores
-credentials:
+`client.account(&creds).messages().create(...)`. `TwilioClient` never stores
+credentials. `TwilioCreds` owns redacted credential buffers that are zeroized
+when dropped; caller-owned source strings and transport-created header copies
+remain outside that guarantee:
 
 ```rust,no_run
 use twilio2::{CreateMessageRequest, ListMessagesRequest, TwilioClient, TwilioCreds};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let client = TwilioClient::from_config(Default::default())?;
-let creds = TwilioCreds {
-    account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-    auth_token: "secret",
-};
+let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 
 let request = CreateMessageRequest::new("+15551234567")
     .from("+15557654321")
     .body("hello");
 
-let message = client.account(creds).messages().create(request).await?;
+let message = client.account(&creds).messages().create(request).await?;
 let all = client
-    .account(creds)
+    .account(&creds)
     .messages()
     .list_all_with(ListMessagesRequest::new().page_size(50))
     .collect_all()
@@ -100,16 +99,13 @@ use twilio2::{BlockingTwilioClient, CreateMessageRequest, TwilioCreds};
 
 fn example() -> Result<(), Box<dyn std::error::Error>> {
 let client = BlockingTwilioClient::from_config(Default::default())?;
-let creds = TwilioCreds {
-    account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-    auth_token: "secret",
-};
+let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 
 let request = CreateMessageRequest::new("+15551234567")
     .from("+15557654321")
     .body("hello");
 
-let account = client.account(creds);
+let account = client.account(&creds);
 let created = account.messages().create(request)?;
 let all = account.messages().list_all().collect_all()?;
 
@@ -125,9 +121,9 @@ use twilio2::{CreateServiceRequest, HttpMethod, TwilioClient, TwilioCreds};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 # let client = TwilioClient::from_config(Default::default())?;
-# let creds = TwilioCreds { account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", auth_token: "secret" };
+# let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 let service = client
-    .account(creds)
+    .account(&creds)
     .services()
     .create(
         CreateServiceRequest::new("alerts")

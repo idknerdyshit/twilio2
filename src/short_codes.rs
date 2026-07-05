@@ -51,8 +51,8 @@ impl<'a> AccountShortCodeFields<'a> {
         params
     }
 
-    fn sensitive_values(self, creds: TwilioCreds<'a>, sid: &'a str) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid, creds.auth_token, sid];
+    fn sensitive_values(self, creds: &'a TwilioCreds, sid: &'a str) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_token(), sid];
         push_sensitive(&mut values, self.friendly_name);
         push_sensitive(&mut values, self.api_version);
         push_string_setting_sensitive(&mut values, self.sms_url);
@@ -148,8 +148,8 @@ impl<'a> ListAccountShortCodesRequest<'a> {
         }
     }
 
-    fn sensitive_values(self, creds: TwilioCreds<'a>) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid, creds.auth_token];
+    fn sensitive_values(self, creds: &'a TwilioCreds) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_token()];
         push_sensitive(&mut values, self.friendly_name);
         push_sensitive(&mut values, self.short_code);
         push_sensitive(&mut values, self.page_token);
@@ -230,7 +230,7 @@ impl<'a> UpdateAccountShortCodeRequest<'a> {
         self.fields.form_params()
     }
 
-    fn sensitive_values(self, creds: TwilioCreds<'a>, sid: &'a str) -> Vec<&'a str> {
+    fn sensitive_values(self, creds: &'a TwilioCreds, sid: &'a str) -> Vec<&'a str> {
         self.fields.sensitive_values(creds, sid)
     }
 }
@@ -440,13 +440,13 @@ impl<'a> AccountShortCodesResource<'a> {
     ) -> Result<TwilioAccountShortCodePage, TwilioError> {
         async move {
             let sensitive_values = vec![
-                self.account.creds.account_sid,
-                self.account.creds.auth_token,
+                self.account.creds.account_sid(),
+                self.account.creds.auth_token(),
                 next_page_uri,
             ];
             let url = self.account.client.legacy_page_url(
                 next_page_uri,
-                self.account.creds.account_sid,
+                self.account.creds.account_sid(),
                 LegacyPageResource::ShortCodes,
             )?;
             let spec = RequestSpec::from_url(
@@ -477,7 +477,7 @@ impl<'a> AccountShortCodesResource<'a> {
         if let Some(next_page_uri) = page.next_page_uri.as_ref() {
             let next_url = self.account.client.legacy_page_url(
                 next_page_uri,
-                self.account.creds.account_sid,
+                self.account.creds.account_sid(),
                 LegacyPageResource::ShortCodes,
             )?;
             if let Some(current_url) = current_url {
@@ -527,7 +527,7 @@ impl<'a> AccountShortCodesResource<'a> {
         self.account.client.rest_endpoint(&[
             "2010-04-01",
             "Accounts",
-            self.account.creds.account_sid,
+            self.account.creds.account_sid(),
             "SMS",
             "ShortCodes.json",
         ])
@@ -608,7 +608,7 @@ impl<'a> AccountShortCodeResource<'a> {
         self.account.client.rest_endpoint(&[
             "2010-04-01",
             "Accounts",
-            self.account.creds.account_sid,
+            self.account.creds.account_sid(),
             "SMS",
             "ShortCodes",
             &format!("{}.json", self.sid),
@@ -630,8 +630,8 @@ impl<'a> AccountShortCodeResource<'a> {
 
     fn sensitive_values(self) -> Vec<&'a str> {
         vec![
-            self.account.creds.account_sid,
-            self.account.creds.auth_token,
+            self.account.creds.account_sid(),
+            self.account.creds.auth_token(),
             self.sid,
         ]
     }
@@ -700,13 +700,13 @@ impl<'a> BlockingAccountShortCodesResource<'a> {
         )
         .in_scope(|| {
             let sensitive_values = vec![
-                self.account.creds.account_sid,
-                self.account.creds.auth_token,
+                self.account.creds.account_sid(),
+                self.account.creds.auth_token(),
                 next_page_uri,
             ];
             let url = self.account.client.legacy_page_url(
                 next_page_uri,
-                self.account.creds.account_sid,
+                self.account.creds.account_sid(),
                 LegacyPageResource::ShortCodes,
             )?;
             let spec = RequestSpec::from_url(
@@ -731,7 +731,7 @@ impl<'a> BlockingAccountShortCodesResource<'a> {
         if let Some(next_page_uri) = page.next_page_uri.as_ref() {
             let next_url = self.account.client.legacy_page_url(
                 next_page_uri,
-                self.account.creds.account_sid,
+                self.account.creds.account_sid(),
                 LegacyPageResource::ShortCodes,
             )?;
             if let Some(current_url) = current_url {
@@ -779,7 +779,7 @@ impl<'a> BlockingAccountShortCodesResource<'a> {
         self.account.client.rest_endpoint(&[
             "2010-04-01",
             "Accounts",
-            self.account.creds.account_sid,
+            self.account.creds.account_sid(),
             "SMS",
             "ShortCodes.json",
         ])
@@ -852,7 +852,7 @@ impl<'a> BlockingAccountShortCodeResource<'a> {
         self.account.client.rest_endpoint(&[
             "2010-04-01",
             "Accounts",
-            self.account.creds.account_sid,
+            self.account.creds.account_sid(),
             "SMS",
             "ShortCodes",
             &format!("{}.json", self.sid),
@@ -874,8 +874,8 @@ impl<'a> BlockingAccountShortCodeResource<'a> {
 
     fn sensitive_values(self) -> Vec<&'a str> {
         vec![
-            self.account.creds.account_sid,
-            self.account.creds.auth_token,
+            self.account.creds.account_sid(),
+            self.account.creds.auth_token(),
             self.sid,
         ]
     }

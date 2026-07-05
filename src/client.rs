@@ -9,8 +9,8 @@ use crate::common::{
     RequestOptions, RequestSpec, RequestTarget, ResponseMeta, RetryPolicy, TwilioClientConfig,
     TwilioConfig, TwilioCreds, TwilioError, api_error_from_body, api_error_from_body_read_error,
     attempt_error, attempt_response, attempt_span, decode_json_response, endpoint_url_from_base,
-    legacy_page_uri_url_from_base, read_limited_response_body, transport_error,
-    v1_page_url_from_base,
+    legacy_page_uri_url_from_base, owned_sensitive_values, read_limited_response_body,
+    transport_error, v1_page_url_from_base,
 };
 use crate::deactivations::DeactivationsResource;
 #[cfg(feature = "sensitive-diagnostics")]
@@ -286,7 +286,7 @@ impl TwilioClient {
     /// Create an account-scoped handle. Credentials are borrowed and are not
     /// retained by [`TwilioClient`].
     #[must_use]
-    pub fn account<'a>(&'a self, creds: TwilioCreds<'a>) -> TwilioAccount<'a> {
+    pub fn account<'a>(&'a self, creds: &'a TwilioCreds) -> TwilioAccount<'a> {
         TwilioAccount {
             client: self,
             creds,
@@ -362,7 +362,7 @@ impl TwilioClient {
 
     pub(crate) async fn send_raw_spec(
         &self,
-        creds: TwilioCreds<'_>,
+        creds: &TwilioCreds,
         spec: RequestSpec,
         options: RequestOptions,
         sensitive_values: &[&str],
@@ -443,15 +443,16 @@ impl TwilioClient {
 
     fn build_raw_request(
         &self,
-        creds: TwilioCreds<'_>,
+        creds: &TwilioCreds,
         spec: &RequestSpec,
         url: &Url,
         options: &RequestOptions,
     ) -> Result<reqwest::Request, reqwest::Error> {
-        let mut request = self
-            .http
-            .request(spec.method.clone(), url.clone())
-            .basic_auth(creds.account_sid, Some(creds.auth_token));
+        let auth_header = creds.basic_auth_header();
+        let mut request = self.http.request(spec.method.clone(), url.clone()).header(
+            reqwest::header::AUTHORIZATION,
+            auth_header.expose().as_str(),
+        );
         if let Some(timeout) = options.timeout {
             request = request.timeout(timeout);
         }
@@ -558,7 +559,7 @@ impl TwilioClient {
 
     async fn send_raw_once(
         &self,
-        creds: TwilioCreds<'_>,
+        creds: &TwilioCreds,
         context: RawAttemptContext<'_, '_>,
     ) -> Result<ApiResponse<RawResponse>, TwilioError> {
         let method = context.spec.method.as_str();
@@ -660,7 +661,7 @@ impl TwilioClient {
 #[derive(Clone, Copy)]
 pub struct TwilioAccount<'a> {
     pub(crate) client: &'a TwilioClient,
-    pub(crate) creds: TwilioCreds<'a>,
+    pub(crate) creds: &'a TwilioCreds,
 }
 
 impl<'a> TwilioAccount<'a> {
@@ -806,12 +807,11 @@ impl<'a> TwilioAccount<'a> {
         options: RequestOptions,
     ) -> Result<ApiResponse<O::Output>, TwilioError> {
         let retry = options.retry_or_default();
-        let mut sensitive_owned = vec![
-            self.creds.account_sid.to_owned(),
-            self.creds.auth_token.to_owned(),
-        ];
-        sensitive_owned.extend(operation.sensitive_values());
-        let sensitive_refs: Vec<&str> = sensitive_owned.iter().map(String::as_str).collect();
+        let sensitive_owned = owned_sensitive_values(operation.sensitive_values());
+        let mut sensitive_refs: Vec<&str> = Vec::with_capacity(sensitive_owned.len() + 2);
+        sensitive_refs.push(self.creds.account_sid());
+        sensitive_refs.push(self.creds.auth_token());
+        sensitive_refs.extend(sensitive_owned.iter().map(String::as_str));
         let fallback_operation = std::any::type_name::<O>();
         let pre_trace = OperationTrace::new(
             fallback_operation,
@@ -819,7 +819,7 @@ impl<'a> TwilioAccount<'a> {
             options.trace_label.as_deref(),
             &sensitive_refs,
         );
-        let spec = match operation.request(self.creds.account_sid) {
+        let spec = match operation.request(self.creds.account_sid()) {
             Ok(spec) => spec,
             Err(error) => {
                 pre_trace.failure("UNKNOWN", 0, None, &error);

@@ -22,16 +22,13 @@
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = TwilioClient::from_config(Default::default())?;
-//! let creds = TwilioCreds {
-//!     account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-//!     auth_token: "secret",
-//! };
+//! let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 //!
 //! let request = CreateMessageRequest::new("+15551234567")
 //!     .from("+15557654321")
 //!     .body("hello");
 //!
-//! let account = client.account(creds);
+//! let account = client.account(&creds);
 //! let created = account.messages().create(request).await?;
 //!
 //! let page = account
@@ -60,11 +57,8 @@
 //! use twilio2::{BlockingTwilioClient, CreateMessageRequest, TwilioCreds};
 //!
 //! let client = BlockingTwilioClient::from_config(Default::default())?;
-//! let creds = TwilioCreds {
-//!     account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-//!     auth_token: "secret",
-//! };
-//! let account = client.account(creds);
+//! let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
+//! let account = client.account(&creds);
 //!
 //! let created = account
 //!     .messages()
@@ -90,11 +84,8 @@
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = TwilioClient::from_config(Default::default())?;
-//! let creds = TwilioCreds {
-//!     account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-//!     auth_token: "secret",
-//! };
-//! let account = client.account(creds);
+//! let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
+//! let account = client.account(&creds);
 //!
 //! let service = account
 //!     .services()
@@ -141,12 +132,9 @@
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = TwilioClient::from_config(Default::default())?;
-//! let creds = TwilioCreds {
-//!     account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-//!     auth_token: "secret",
-//! };
+//! let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 //! let service = client
-//!     .account(creds)
+//!     .account(&creds)
 //!     .service("MGxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
 //!
 //! let phone_number = service
@@ -219,6 +207,7 @@ mod deactivations;
 #[cfg(feature = "sensitive-diagnostics")]
 mod diagnostics;
 mod messages;
+mod secret;
 mod services;
 mod short_codes;
 mod tollfree_verifications;
@@ -263,6 +252,7 @@ pub use messages::{
 pub use messages::{
     MessageFeedbackResource, MessageMediaResource, MessageResource, MessagesResource,
 };
+pub use secret::Secret;
 #[cfg(feature = "sync")]
 pub use services::{
     BlockingServiceAlphaSendersResource, BlockingServiceChannelSendersResource,

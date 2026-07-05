@@ -31,8 +31,8 @@ impl<'a> FetchDeactivationsRequest<'a> {
         validate_yyyy_mm_dd("Date", self.date)
     }
 
-    fn sensitive_values(self, creds: TwilioCreds<'a>) -> Vec<&'a str> {
-        vec![creds.account_sid, creds.auth_token, self.date]
+    fn sensitive_values(self, creds: &'a TwilioCreds) -> Vec<&'a str> {
+        vec![creds.account_sid(), creds.auth_token(), self.date]
     }
 }
 

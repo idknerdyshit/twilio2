@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- **Breaking:** `TwilioCreds` now owns redacted, zero-on-drop credential
+  buffers. Construct credentials with `TwilioCreds::new(...)` and pass
+  `&creds` to `client.account(...)` / `blocking_client.account(...)`.
+
+### Added
+
+- Add a public `Secret<T>` wrapper for redacted, zero-on-drop sensitive values.
+
 ## [0.2.0] - 2026-07-03
 
 ### Changed

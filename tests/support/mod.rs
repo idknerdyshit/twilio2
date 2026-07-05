@@ -1,7 +1,7 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::missing_panics_doc)]
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use rcgen::CertifiedKey;
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -161,11 +161,9 @@ pub fn test_agent() -> ureq::Agent {
     ureq::Agent::new_with_config(builder.build())
 }
 
-pub fn test_creds() -> TwilioCreds<'static> {
-    TwilioCreds {
-        account_sid: "AC123",
-        auth_token: "token",
-    }
+pub fn test_creds() -> &'static TwilioCreds {
+    static CREDS: LazyLock<TwilioCreds> = LazyLock::new(|| TwilioCreds::new("AC123", "token"));
+    &CREDS
 }
 
 #[cfg(feature = "async")]

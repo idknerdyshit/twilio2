@@ -17,7 +17,13 @@ categories = ["api-bindings", "web-programming::http-client"]
 
 [features]
 default = ["async", "rustls"]
-async = ["dep:reqwest", "dep:tokio", "dep:futures-core", "dep:async-stream"]
+async = [
+    "dep:reqwest",
+    "dep:tokio",
+    "dep:futures-core",
+    "dep:async-stream",
+    "dep:base64",
+]
 sync = ["dep:ureq", "dep:serde_urlencoded", "dep:base64"]
 rustls = ["reqwest?/rustls", "ureq?/rustls"]
 native-tls = ["reqwest?/native-tls", "ureq?/native-tls"]
@@ -40,6 +46,7 @@ tokio = { version = "1", features = ["time"], optional = true }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 ureq = { version = "3", default-features = false, optional = true }
 url = "2"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }

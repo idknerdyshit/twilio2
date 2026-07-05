@@ -3,7 +3,6 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Instant;
 
-use base64::Engine as _;
 use http::HeaderMap;
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use url::Url;
@@ -14,7 +13,8 @@ use crate::common::{
     TwilioClientConfig, TwilioConfig, TwilioCreds, TwilioError, api_error_from_body,
     api_error_from_read_error_message, attempt_error, attempt_response, attempt_span,
     decode_json_response, endpoint_url_from_base, legacy_page_uri_url_from_base,
-    read_limited_reader_body, transport_error_from_message, v1_page_url_from_base,
+    owned_sensitive_values, read_limited_reader_body, transport_error_from_message,
+    v1_page_url_from_base,
 };
 use crate::deactivations::BlockingDeactivationsResource;
 #[cfg(feature = "sensitive-diagnostics")]
@@ -305,7 +305,7 @@ impl BlockingTwilioClient {
     /// Create an account-scoped handle. Credentials are borrowed and are not
     /// retained by [`BlockingTwilioClient`].
     #[must_use]
-    pub fn account<'a>(&'a self, creds: TwilioCreds<'a>) -> BlockingTwilioAccount<'a> {
+    pub fn account<'a>(&'a self, creds: &'a TwilioCreds) -> BlockingTwilioAccount<'a> {
         BlockingTwilioAccount {
             client: self,
             creds,
@@ -379,7 +379,7 @@ impl BlockingTwilioClient {
 
     pub(crate) fn send_raw_spec(
         &self,
-        creds: TwilioCreds<'_>,
+        creds: &TwilioCreds,
         spec: RequestSpec,
         options: RequestOptions,
         sensitive_values: &[&str],
@@ -457,15 +457,16 @@ impl BlockingTwilioClient {
     }
 
     fn build_raw_request(
-        creds: TwilioCreds<'_>,
+        creds: &TwilioCreds,
         spec: &RequestSpec,
         url: &Url,
         options: &RequestOptions,
     ) -> Result<BuiltRequest, http::Error> {
+        let auth_header = creds.basic_auth_header();
         let mut builder = http::Request::builder()
             .method(spec.method.clone())
             .uri(url.as_str())
-            .header(AUTHORIZATION, basic_auth_value(creds));
+            .header(AUTHORIZATION, auth_header.expose().as_str());
         for (key, value) in &options.headers {
             builder = builder.header(key.as_str(), value.as_str());
         }
@@ -610,7 +611,7 @@ impl BlockingTwilioClient {
 
     fn send_raw_once(
         &self,
-        creds: TwilioCreds<'_>,
+        creds: &TwilioCreds,
         context: RawAttemptContext<'_, '_>,
     ) -> Result<ApiResponse<RawResponse>, TwilioError> {
         let method = context.spec.method.as_str();
@@ -713,7 +714,7 @@ impl BlockingTwilioClient {
 #[derive(Clone, Copy)]
 pub struct BlockingTwilioAccount<'a> {
     pub(crate) client: &'a BlockingTwilioClient,
-    pub(crate) creds: TwilioCreds<'a>,
+    pub(crate) creds: &'a TwilioCreds,
 }
 
 impl<'a> BlockingTwilioAccount<'a> {
@@ -851,12 +852,11 @@ impl<'a> BlockingTwilioAccount<'a> {
         options: RequestOptions,
     ) -> Result<ApiResponse<O::Output>, TwilioError> {
         let retry = options.retry_or_default();
-        let mut sensitive_owned = vec![
-            self.creds.account_sid.to_owned(),
-            self.creds.auth_token.to_owned(),
-        ];
-        sensitive_owned.extend(operation.sensitive_values());
-        let sensitive_refs: Vec<&str> = sensitive_owned.iter().map(String::as_str).collect();
+        let sensitive_owned = owned_sensitive_values(operation.sensitive_values());
+        let mut sensitive_refs: Vec<&str> = Vec::with_capacity(sensitive_owned.len() + 2);
+        sensitive_refs.push(self.creds.account_sid());
+        sensitive_refs.push(self.creds.auth_token());
+        sensitive_refs.extend(sensitive_owned.iter().map(String::as_str));
         let fallback_operation = std::any::type_name::<O>();
         let pre_trace = OperationTrace::new(
             fallback_operation,
@@ -864,7 +864,7 @@ impl<'a> BlockingTwilioAccount<'a> {
             options.trace_label.as_deref(),
             &sensitive_refs,
         );
-        let spec = match operation.request(self.creds.account_sid) {
+        let spec = match operation.request(self.creds.account_sid()) {
             Ok(spec) => spec,
             Err(error) => {
                 pre_trace.failure("UNKNOWN", 0, None, &error);
@@ -1017,12 +1017,6 @@ fn default_agent(config: &TwilioClientConfig) -> ureq::Agent {
             .build(),
     );
     ureq::Agent::new_with_config(builder.build())
-}
-
-fn basic_auth_value(creds: TwilioCreds<'_>) -> String {
-    let token = format!("{}:{}", creds.account_sid, creds.auth_token);
-    let encoded = base64::engine::general_purpose::STANDARD.encode(token);
-    format!("Basic {encoded}")
 }
 
 fn error_message(e: &impl std::error::Error) -> String {

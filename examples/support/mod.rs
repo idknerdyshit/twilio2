@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use rcgen::CertifiedKey;
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -122,11 +122,9 @@ pub(super) fn client_for(server: &HttpsMockServer) -> ExampleResult<TwilioClient
     )?)
 }
 
-pub(super) fn creds() -> TwilioCreds<'static> {
-    TwilioCreds {
-        account_sid: "AC123",
-        auth_token: "token",
-    }
+pub(super) fn creds() -> &'static TwilioCreds {
+    static CREDS: LazyLock<TwilioCreds> = LazyLock::new(|| TwilioCreds::new("AC123", "token"));
+    &CREDS
 }
 
 pub(super) fn missing(name: &'static str) -> io::Error {

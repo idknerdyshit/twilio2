@@ -1,8 +1,14 @@
-use reqwest::Method;
+#![cfg_attr(feature = "sync", allow(clippy::needless_pass_by_value))]
+
+use http::Method;
 use serde::Deserialize;
 use time::{Date, Month};
+#[cfg(feature = "async")]
 use tracing::Instrument as _;
 
+#[cfg(feature = "sync")]
+use crate::blocking_client::BlockingTwilioAccount;
+#[cfg(feature = "async")]
 use crate::client::TwilioAccount;
 use crate::common::{
     ApiFamily, RequestSpec, TwilioCreds, TwilioError, redacted_option, request_span,
@@ -59,10 +65,12 @@ impl WireDeactivation {
 
 /// Messaging v1 Deactivations collection.
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
 pub struct DeactivationsResource<'a> {
     account: TwilioAccount<'a>,
 }
 
+#[cfg(feature = "async")]
 impl<'a> DeactivationsResource<'a> {
     pub(crate) fn new(account: TwilioAccount<'a>) -> Self {
         Self { account }
@@ -95,6 +103,47 @@ impl<'a> DeactivationsResource<'a> {
             "GET",
         ))
         .await
+    }
+}
+
+/// Blocking Messaging v1 Deactivations collection.
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingDeactivationsResource<'a> {
+    account: BlockingTwilioAccount<'a>,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingDeactivationsResource<'a> {
+    pub(crate) fn new(account: BlockingTwilioAccount<'a>) -> Self {
+        Self { account }
+    }
+
+    /// `GET /Deactivations`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, or malformed JSON responses.
+    pub fn fetch(
+        self,
+        request: FetchDeactivationsRequest<'a>,
+    ) -> Result<TwilioDeactivation, TwilioError> {
+        request_span(
+            &self.account.client.config.messaging_base_url,
+            "deactivations.fetch",
+            "GET",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let spec = RequestSpec::new(ApiFamily::Messaging, Method::GET, ["Deactivations"])
+                .operation("deactivations.fetch")
+                .query("Date", request.date)
+                .accept_status(307);
+            let parsed: WireDeactivation = self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(parsed.into_deactivation())
+        })
     }
 }
 

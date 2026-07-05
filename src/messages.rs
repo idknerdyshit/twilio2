@@ -1,18 +1,28 @@
+#![cfg_attr(feature = "sync", allow(clippy::needless_pass_by_value))]
+
 use std::collections::BTreeMap;
 
-use reqwest::{Method, Url};
+use http::Method;
 use serde::Deserialize;
 use time::OffsetDateTime;
+#[cfg(feature = "async")]
 use tracing::Instrument as _;
+use url::Url;
 
+#[cfg(feature = "sync")]
+use crate::blocking_client::BlockingTwilioAccount;
+#[cfg(feature = "async")]
 use crate::client::TwilioAccount;
+#[cfg(feature = "sync")]
+use crate::common::BlockingTwilioPaginator;
 use crate::common::{
-    ApiFamily, DEFAULT_PAGE_SIZE, FormEnum, FormParam, LegacyPageResource, PageFuture, RequestSpec,
-    TwilioCreds, TwilioError, TwilioMediaContent, TwilioPaginator, decode_json_response,
-    has_non_empty, non_empty, parse_rfc2822, push_bool, push_enum, push_sensitive, push_str,
-    push_u32, redacted_option, request_span, validate_legacy_next_page_continuation,
-    validate_page_size,
+    ApiFamily, DEFAULT_PAGE_SIZE, FormEnum, FormParam, LegacyPageResource, RequestSpec,
+    TwilioCreds, TwilioError, TwilioMediaContent, decode_json_response, has_non_empty, non_empty,
+    parse_rfc2822, push_bool, push_enum, push_sensitive, push_str, push_u32, redacted_option,
+    request_span, validate_legacy_next_page_continuation, validate_page_size,
 };
+#[cfg(feature = "async")]
+use crate::common::{PageFuture, TwilioPaginator};
 
 const MESSAGE_BODY_MAX_CHARS: usize = 1_600;
 const MESSAGE_VALIDITY_PERIOD_MIN_SECONDS: u32 = 1;
@@ -1101,10 +1111,12 @@ impl WireMessageFeedback {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
 pub struct MessagesResource<'a> {
     account: TwilioAccount<'a>,
 }
 
+#[cfg(feature = "async")]
 impl<'a> MessagesResource<'a> {
     pub(crate) fn new(account: TwilioAccount<'a>) -> Self {
         Self { account }
@@ -1281,11 +1293,13 @@ fn split_message_page(page: TwilioMessagePage) -> (Vec<TwilioMessage>, Option<St
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
 pub struct MessageResource<'a> {
     account: TwilioAccount<'a>,
     sid: &'a str,
 }
 
+#[cfg(feature = "async")]
 impl<'a> MessageResource<'a> {
     pub(crate) fn new(account: TwilioAccount<'a>, sid: &'a str) -> Self {
         Self { account, sid }
@@ -1404,10 +1418,12 @@ impl<'a> MessageResource<'a> {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
 pub struct MessageMediaResource<'a> {
     message: MessageResource<'a>,
 }
 
+#[cfg(feature = "async")]
 impl<'a> MessageMediaResource<'a> {
     /// `GET /2010-04-01/Accounts/{AccountSid}/Messages/{MessageSid}/Media/{Sid}.json`.
     ///
@@ -1452,7 +1468,7 @@ impl<'a> MessageMediaResource<'a> {
                 content_type: raw
                     .raw
                     .headers
-                    .get(reqwest::header::CONTENT_TYPE)
+                    .get(http::header::CONTENT_TYPE)
                     .and_then(|value| value.to_str().ok())
                     .map(str::to_owned),
                 bytes: raw.raw.body,
@@ -1674,10 +1690,12 @@ fn split_media_page(page: TwilioMediaPage) -> (Vec<TwilioMedia>, Option<String>)
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
 pub struct MessageFeedbackResource<'a> {
     message: MessageResource<'a>,
 }
 
+#[cfg(feature = "async")]
 impl MessageFeedbackResource<'_> {
     /// `POST /2010-04-01/Accounts/{AccountSid}/Messages/{MessageSid}/Feedback.json`.
     ///
@@ -1724,5 +1742,595 @@ impl MessageFeedbackResource<'_> {
             "POST",
         ))
         .await
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingMessagesResource<'a> {
+    account: BlockingTwilioAccount<'a>,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingMessagesResource<'a> {
+    pub(crate) fn new(account: BlockingTwilioAccount<'a>) -> Self {
+        Self { account }
+    }
+
+    /// `POST /2010-04-01/Accounts/{AccountSid}/Messages.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, or malformed JSON responses.
+    pub fn create(self, request: CreateMessageRequest<'a>) -> Result<TwilioMessage, TwilioError> {
+        request_span(
+            &self.account.client.config.rest_base_url,
+            "messages.create",
+            "POST",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let spec = RequestSpec::new(
+                ApiFamily::Rest,
+                Method::POST,
+                [
+                    "2010-04-01",
+                    "Accounts",
+                    self.account.creds.account_sid,
+                    "Messages.json",
+                ],
+            )
+            .operation("messages.create")
+            .form_params(request.form_params());
+            let msg: WireMessage = self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(msg.into_message())
+        })
+    }
+
+    /// `GET /2010-04-01/Accounts/{AccountSid}/Messages.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, malformed JSON responses, or invalid pagination
+    /// metadata.
+    pub fn list(self, request: ListMessagesRequest<'a>) -> Result<TwilioMessagePage, TwilioError> {
+        request_span(
+            &self.account.client.config.rest_base_url,
+            "messages.list",
+            "GET",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let mut url = self.account.client.rest_endpoint(&[
+                "2010-04-01",
+                "Accounts",
+                self.account.creds.account_sid,
+                "Messages.json",
+            ])?;
+            request.apply_query(&mut url);
+            let spec =
+                RequestSpec::from_url(ApiFamily::Rest, Method::GET, url.clone(), "messages.list");
+            let raw = self.account.send_spec_raw(spec, &sensitive_values)?;
+            self.read_page(&raw.output, &sensitive_values, Some(&url))
+        })
+    }
+
+    /// Fetch a subsequent Messages page by Twilio's `next_page_uri`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] when the URI is invalid, leaves the configured
+    /// origin/base path, is not a Messages page for this account, or the HTTP
+    /// request/response fails.
+    pub fn list_page_uri(self, next_page_uri: &str) -> Result<TwilioMessagePage, TwilioError> {
+        request_span(
+            &self.account.client.config.rest_base_url,
+            "messages.list_page_uri",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = vec![
+                self.account.creds.account_sid,
+                self.account.creds.auth_token,
+                next_page_uri,
+            ];
+            let url = self.account.client.legacy_page_url(
+                next_page_uri,
+                self.account.creds.account_sid,
+                LegacyPageResource::Messages,
+            )?;
+            let spec = RequestSpec::from_url(
+                ApiFamily::Rest,
+                Method::GET,
+                url.clone(),
+                "messages.list_page_uri",
+            );
+            let raw = self.account.send_spec_raw(spec, &sensitive_values)?;
+            self.read_page(&raw.output, &sensitive_values, Some(&url))
+        })
+    }
+
+    fn read_page(
+        self,
+        raw: &crate::RawResponse,
+        sensitive_values: &[&str],
+        current_url: Option<&Url>,
+    ) -> Result<TwilioMessagePage, TwilioError> {
+        let parsed: WireMessagePage = decode_json_response(raw, sensitive_values)?;
+        let page = parsed.into_page();
+        if let Some(next_page_uri) = page.next_page_uri.as_ref() {
+            let next_url = self.account.client.legacy_page_url(
+                next_page_uri,
+                self.account.creds.account_sid,
+                LegacyPageResource::Messages,
+            )?;
+            if let Some(current_url) = current_url {
+                validate_legacy_next_page_continuation(
+                    current_url,
+                    &next_url,
+                    LegacyPageResource::Messages,
+                )?;
+            }
+        }
+        Ok(page)
+    }
+
+    /// Lazily list all Messages using a default page size of 50.
+    #[must_use]
+    pub fn list_all(self) -> BlockingTwilioPaginator<'a, TwilioMessagePage, TwilioMessage> {
+        self.list_all_with(ListMessagesRequest::new())
+    }
+
+    /// Lazily list all Messages using the supplied first-page filters.
+    #[must_use]
+    pub fn list_all_with(
+        self,
+        mut request: ListMessagesRequest<'a>,
+    ) -> BlockingTwilioPaginator<'a, TwilioMessagePage, TwilioMessage> {
+        if request.page_size.is_none() {
+            request.page_size = Some(DEFAULT_PAGE_SIZE);
+        }
+        BlockingTwilioPaginator::new(
+            move |cursor| {
+                let resource = self;
+                if let Some(cursor) = cursor {
+                    resource.list_page_uri(&cursor)
+                } else {
+                    resource.list(request)
+                }
+            },
+            split_message_page,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingMessageResource<'a> {
+    account: BlockingTwilioAccount<'a>,
+    sid: &'a str,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingMessageResource<'a> {
+    pub(crate) fn new(account: BlockingTwilioAccount<'a>, sid: &'a str) -> Self {
+        Self { account, sid }
+    }
+
+    /// `GET /2010-04-01/Accounts/{AccountSid}/Messages/{Sid}.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures, non-2xx API responses,
+    /// or malformed JSON responses.
+    pub fn fetch(self) -> Result<TwilioMessage, TwilioError> {
+        request_span(
+            &self.account.client.config.rest_base_url,
+            "message.fetch",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = vec![
+                self.account.creds.account_sid,
+                self.account.creds.auth_token,
+                self.sid,
+            ];
+            let spec = self.message_spec(Method::GET, "message.fetch")?;
+            let msg: WireMessage = self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(msg.into_message())
+        })
+    }
+
+    /// `POST /2010-04-01/Accounts/{AccountSid}/Messages/{Sid}.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, or malformed JSON responses.
+    pub fn update(self, request: UpdateMessageRequest<'a>) -> Result<TwilioMessage, TwilioError> {
+        request_span(
+            &self.account.client.config.rest_base_url,
+            "message.update",
+            "POST",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds, self.sid);
+            let spec = self
+                .message_spec(Method::POST, "message.update")?
+                .form_params(request.form_params());
+            let msg: WireMessage = self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(msg.into_message())
+        })
+    }
+
+    /// `DELETE /2010-04-01/Accounts/{AccountSid}/Messages/{Sid}.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures or non-2xx API responses.
+    pub fn delete(self) -> Result<(), TwilioError> {
+        request_span(
+            &self.account.client.config.rest_base_url,
+            "message.delete",
+            "DELETE",
+        )
+        .in_scope(|| {
+            let sensitive_values = vec![
+                self.account.creds.account_sid,
+                self.account.creds.auth_token,
+                self.sid,
+            ];
+            let spec = self.message_spec(Method::DELETE, "message.delete")?;
+            self.account.send_spec_empty(spec, &sensitive_values)
+        })
+    }
+
+    /// Message Media subresource collection.
+    #[must_use]
+    pub fn media(self) -> BlockingMessageMediaResource<'a> {
+        BlockingMessageMediaResource { message: self }
+    }
+
+    /// Message Feedback subresource.
+    #[must_use]
+    pub fn feedback(self) -> BlockingMessageFeedbackResource<'a> {
+        BlockingMessageFeedbackResource { message: self }
+    }
+
+    fn message_url(self) -> Result<Url, TwilioError> {
+        self.account.client.rest_endpoint(&[
+            "2010-04-01",
+            "Accounts",
+            self.account.creds.account_sid,
+            "Messages",
+            &format!("{}.json", self.sid),
+        ])
+    }
+
+    fn message_spec(
+        self,
+        method: Method,
+        operation: &'static str,
+    ) -> Result<RequestSpec, TwilioError> {
+        Ok(RequestSpec::from_url(
+            ApiFamily::Rest,
+            method,
+            self.message_url()?,
+            operation,
+        ))
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingMessageMediaResource<'a> {
+    message: BlockingMessageResource<'a>,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingMessageMediaResource<'a> {
+    /// `GET /2010-04-01/Accounts/{AccountSid}/Messages/{MessageSid}/Media/{Sid}.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures, non-2xx API responses,
+    /// or malformed JSON responses.
+    pub fn fetch(self, media_sid: &'a str) -> Result<TwilioMedia, TwilioError> {
+        request_span(
+            &self.message.account.client.config.rest_base_url,
+            "message.media.fetch",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = self.sensitive_values(media_sid);
+            let spec = self.media_spec(media_sid, true, Method::GET, "message.media.fetch")?;
+            let media: WireMedia = self
+                .message
+                .account
+                .send_spec_json(spec, &sensitive_values)?;
+            Ok(media.into_media())
+        })
+    }
+
+    /// `GET /2010-04-01/Accounts/{AccountSid}/Messages/{MessageSid}/Media/{Sid}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures or non-2xx API responses.
+    pub fn download(self, media_sid: &'a str) -> Result<TwilioMediaContent, TwilioError> {
+        request_span(
+            &self.message.account.client.config.rest_base_url,
+            "message.media.download",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = self.sensitive_values(media_sid);
+            let spec = self.media_spec(media_sid, false, Method::GET, "message.media.download")?;
+            let raw = self
+                .message
+                .account
+                .send_spec_raw(spec, &sensitive_values)?;
+            Ok(TwilioMediaContent {
+                content_type: raw
+                    .raw
+                    .headers
+                    .get(http::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned),
+                bytes: raw.raw.body,
+            })
+        })
+    }
+
+    /// `GET /2010-04-01/Accounts/{AccountSid}/Messages/{MessageSid}/Media.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, malformed JSON responses, or invalid pagination
+    /// metadata.
+    pub fn list(self, request: ListMediaRequest<'a>) -> Result<TwilioMediaPage, TwilioError> {
+        request_span(
+            &self.message.account.client.config.rest_base_url,
+            "message.media.list",
+            "GET",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values =
+                request.sensitive_values(self.message.account.creds, self.message.sid);
+            let mut url = self.message.account.client.rest_endpoint(&[
+                "2010-04-01",
+                "Accounts",
+                self.message.account.creds.account_sid,
+                "Messages",
+                self.message.sid,
+                "Media.json",
+            ])?;
+            request.apply_query(&mut url);
+            let spec = RequestSpec::from_url(
+                ApiFamily::Rest,
+                Method::GET,
+                url.clone(),
+                "message.media.list",
+            );
+            let raw = self
+                .message
+                .account
+                .send_spec_raw(spec, &sensitive_values)?;
+            self.read_page(&raw.output, &sensitive_values, Some(&url))
+        })
+    }
+
+    /// Fetch a subsequent Media page by Twilio's `next_page_uri`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] when the URI is invalid, leaves the configured
+    /// origin/base path, is not a Media page for this message, or the HTTP
+    /// request/response fails.
+    pub fn list_page_uri(self, next_page_uri: &str) -> Result<TwilioMediaPage, TwilioError> {
+        request_span(
+            &self.message.account.client.config.rest_base_url,
+            "message.media.list_page_uri",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = vec![
+                self.message.account.creds.account_sid,
+                self.message.account.creds.auth_token,
+                self.message.sid,
+                next_page_uri,
+            ];
+            let url = self.message.account.client.legacy_page_url(
+                next_page_uri,
+                self.message.account.creds.account_sid,
+                LegacyPageResource::Media {
+                    message_sid: self.message.sid,
+                },
+            )?;
+            let spec = RequestSpec::from_url(
+                ApiFamily::Rest,
+                Method::GET,
+                url.clone(),
+                "message.media.list_page_uri",
+            );
+            let raw = self
+                .message
+                .account
+                .send_spec_raw(spec, &sensitive_values)?;
+            self.read_page(&raw.output, &sensitive_values, Some(&url))
+        })
+    }
+
+    /// `DELETE /2010-04-01/Accounts/{AccountSid}/Messages/{MessageSid}/Media/{Sid}.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures or non-2xx API responses.
+    pub fn delete(self, media_sid: &'a str) -> Result<(), TwilioError> {
+        request_span(
+            &self.message.account.client.config.rest_base_url,
+            "message.media.delete",
+            "DELETE",
+        )
+        .in_scope(|| {
+            let sensitive_values = self.sensitive_values(media_sid);
+            let spec = self.media_spec(media_sid, true, Method::DELETE, "message.media.delete")?;
+            self.message
+                .account
+                .send_spec_empty(spec, &sensitive_values)
+        })
+    }
+
+    fn read_page(
+        self,
+        raw: &crate::RawResponse,
+        sensitive_values: &[&str],
+        current_url: Option<&Url>,
+    ) -> Result<TwilioMediaPage, TwilioError> {
+        let parsed: WireMediaPage = decode_json_response(raw, sensitive_values)?;
+        let page = parsed.into_page();
+        if let Some(next_page_uri) = page.next_page_uri.as_ref() {
+            let resource = LegacyPageResource::Media {
+                message_sid: self.message.sid,
+            };
+            let next_url = self.message.account.client.legacy_page_url(
+                next_page_uri,
+                self.message.account.creds.account_sid,
+                resource,
+            )?;
+            if let Some(current_url) = current_url {
+                validate_legacy_next_page_continuation(current_url, &next_url, resource)?;
+            }
+        }
+        Ok(page)
+    }
+
+    fn sensitive_values(self, media_sid: &'a str) -> Vec<&'a str> {
+        vec![
+            self.message.account.creds.account_sid,
+            self.message.account.creds.auth_token,
+            self.message.sid,
+            media_sid,
+        ]
+    }
+
+    fn media_url(self, media_sid: &str, json: bool) -> Result<Url, TwilioError> {
+        let media_segment = if json {
+            format!("{media_sid}.json")
+        } else {
+            media_sid.to_owned()
+        };
+        self.message.account.client.rest_endpoint(&[
+            "2010-04-01",
+            "Accounts",
+            self.message.account.creds.account_sid,
+            "Messages",
+            self.message.sid,
+            "Media",
+            &media_segment,
+        ])
+    }
+
+    fn media_spec(
+        self,
+        media_sid: &str,
+        json: bool,
+        method: Method,
+        operation: &'static str,
+    ) -> Result<RequestSpec, TwilioError> {
+        Ok(RequestSpec::from_url(
+            ApiFamily::Rest,
+            method,
+            self.media_url(media_sid, json)?,
+            operation,
+        ))
+    }
+
+    /// Lazily list all Media records using a default page size of 50.
+    #[must_use]
+    pub fn list_all(self) -> BlockingTwilioPaginator<'a, TwilioMediaPage, TwilioMedia> {
+        self.list_all_with(ListMediaRequest::new())
+    }
+
+    /// Lazily list all Media records using the supplied first-page filters.
+    #[must_use]
+    pub fn list_all_with(
+        self,
+        mut request: ListMediaRequest<'a>,
+    ) -> BlockingTwilioPaginator<'a, TwilioMediaPage, TwilioMedia> {
+        if request.page_size.is_none() {
+            request.page_size = Some(DEFAULT_PAGE_SIZE);
+        }
+        BlockingTwilioPaginator::new(
+            move |cursor| {
+                let resource = self;
+                if let Some(cursor) = cursor {
+                    resource.list_page_uri(&cursor)
+                } else {
+                    resource.list(request)
+                }
+            },
+            split_media_page,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingMessageFeedbackResource<'a> {
+    message: BlockingMessageResource<'a>,
+}
+
+#[cfg(feature = "sync")]
+impl BlockingMessageFeedbackResource<'_> {
+    /// `POST /2010-04-01/Accounts/{AccountSid}/Messages/{MessageSid}/Feedback.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures, non-2xx API responses,
+    /// or malformed JSON responses.
+    pub fn create(
+        self,
+        request: CreateMessageFeedbackRequest,
+    ) -> Result<TwilioMessageFeedback, TwilioError> {
+        request_span(
+            &self.message.account.client.config.rest_base_url,
+            "message.feedback.create",
+            "POST",
+        )
+        .in_scope(|| {
+            let sensitive_values = vec![
+                self.message.account.creds.account_sid,
+                self.message.account.creds.auth_token,
+                self.message.sid,
+            ];
+            let url = self.message.account.client.rest_endpoint(&[
+                "2010-04-01",
+                "Accounts",
+                self.message.account.creds.account_sid,
+                "Messages",
+                self.message.sid,
+                "Feedback.json",
+            ])?;
+            let spec = RequestSpec::from_url(
+                ApiFamily::Rest,
+                Method::POST,
+                url,
+                "message.feedback.create",
+            )
+            .form_params(request.form_params());
+            let feedback: WireMessageFeedback = self
+                .message
+                .account
+                .send_spec_json(spec, &sensitive_values)?;
+            Ok(feedback.into_feedback())
+        })
     }
 }

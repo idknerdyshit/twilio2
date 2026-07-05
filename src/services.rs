@@ -1,18 +1,28 @@
+#![cfg_attr(feature = "sync", allow(clippy::needless_pass_by_value))]
+
 use std::collections::BTreeMap;
 
-use reqwest::{Method, Url};
+use http::Method;
 use serde::Deserialize;
 use time::OffsetDateTime;
+#[cfg(feature = "async")]
 use tracing::Instrument as _;
+use url::Url;
 
+#[cfg(feature = "sync")]
+use crate::blocking_client::BlockingTwilioAccount;
+#[cfg(feature = "async")]
 use crate::client::TwilioAccount;
+#[cfg(feature = "sync")]
+use crate::common::BlockingTwilioPaginator;
 use crate::common::{
-    ApiFamily, DEFAULT_PAGE_SIZE, FormEnum, FormParam, PageFuture, RequestSpec, TwilioCreds,
-    TwilioError, TwilioPaginator, V1PageMeta, V1PageResource, WireV1PageMeta, decode_json_response,
-    has_non_empty, parse_iso8601, push_bool, push_enum, push_sensitive, push_str, push_u32,
-    redacted_option, request_span, validate_page_size, validate_v1_meta_key,
-    validate_v1_next_page_continuation,
+    ApiFamily, DEFAULT_PAGE_SIZE, FormEnum, FormParam, RequestSpec, TwilioCreds, TwilioError,
+    V1PageMeta, V1PageResource, WireV1PageMeta, decode_json_response, has_non_empty, parse_iso8601,
+    push_bool, push_enum, push_sensitive, push_str, push_u32, redacted_option, request_span,
+    validate_page_size, validate_v1_meta_key, validate_v1_next_page_continuation,
 };
+#[cfg(feature = "async")]
+use crate::common::{PageFuture, TwilioPaginator};
 
 const SERVICE_FRIENDLY_NAME_MAX_CHARS: usize = 64;
 const SERVICE_VALIDITY_PERIOD_MIN_SECONDS: u32 = 1;
@@ -1321,10 +1331,12 @@ impl WireDestinationAlphaSenderPage {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
 pub struct ServicesResource<'a> {
     account: TwilioAccount<'a>,
 }
 
+#[cfg(feature = "async")]
 impl<'a> ServicesResource<'a> {
     pub(crate) fn new(account: TwilioAccount<'a>) -> Self {
         Self { account }
@@ -1481,11 +1493,13 @@ fn split_service_page(page: TwilioServicePage) -> (Vec<TwilioService>, Option<St
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
 pub struct ServiceResource<'a> {
     account: TwilioAccount<'a>,
     sid: &'a str,
 }
 
+#[cfg(feature = "async")]
 impl<'a> ServiceResource<'a> {
     pub(crate) fn new(account: TwilioAccount<'a>, sid: &'a str) -> Self {
         Self { account, sid }
@@ -1637,6 +1651,7 @@ impl<'a> ServiceResource<'a> {
     }
 }
 
+#[cfg(feature = "async")]
 fn validate_next_v1_url(
     account: TwilioAccount<'_>,
     next_page_url: Option<&str>,
@@ -1667,10 +1682,12 @@ macro_rules! impl_sender_resource {
         $items_field:ident
     ) => {
         #[derive(Clone, Copy)]
+        #[cfg(feature = "async")]
         pub struct $resource<'a> {
             service: ServiceResource<'a>,
         }
 
+        #[cfg(feature = "async")]
         impl<'a> $resource<'a> {
             /// Create a sender association under this Messaging Service.
             ///
@@ -1991,10 +2008,12 @@ impl_sender_resource!(
 );
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
 pub struct ServiceDestinationAlphaSendersResource<'a> {
     service: ServiceResource<'a>,
 }
 
+#[cfg(feature = "async")]
 impl<'a> ServiceDestinationAlphaSendersResource<'a> {
     /// Create a `DestinationAlphaSender` under this Messaging Service.
     ///
@@ -2258,6 +2277,909 @@ impl<'a> ServiceDestinationAlphaSendersResource<'a> {
                         resource.list(request).await
                     }
                 }) as PageFuture<'a, TwilioDestinationAlphaSenderPage>
+            },
+            |page| (page.alpha_senders, page.meta.next_page_url),
+        )
+    }
+}
+
+#[cfg(feature = "sync")]
+fn validate_next_v1_url_blocking(
+    account: BlockingTwilioAccount<'_>,
+    next_page_url: Option<&str>,
+    resource: V1PageResource<'_>,
+    current_url: Option<&Url>,
+) -> Result<(), TwilioError> {
+    if let Some(next_page_url) = next_page_url {
+        let next_url = account.client.v1_page_url(next_page_url, resource)?;
+        if let Some(current_url) = current_url {
+            validate_v1_next_page_continuation(current_url, &next_url, resource)?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingServicesResource<'a> {
+    account: BlockingTwilioAccount<'a>,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingServicesResource<'a> {
+    pub(crate) fn new(account: BlockingTwilioAccount<'a>) -> Self {
+        Self { account }
+    }
+
+    /// `POST /Services`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, or malformed JSON responses.
+    pub fn create(self, request: CreateServiceRequest<'a>) -> Result<TwilioService, TwilioError> {
+        request_span(
+            &self.account.client.config.messaging_base_url,
+            "services.create",
+            "POST",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let spec = RequestSpec::new(ApiFamily::Messaging, Method::POST, ["Services"])
+                .operation("services.create")
+                .form_params(request.form_params());
+            let service: WireService = self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(service.into_service())
+        })
+    }
+
+    /// `GET /Services`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, malformed JSON responses, or invalid pagination
+    /// metadata.
+    pub fn list(self, request: ListServicesRequest<'a>) -> Result<TwilioServicePage, TwilioError> {
+        request_span(
+            &self.account.client.config.messaging_base_url,
+            "services.list",
+            "GET",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let mut url = self.account.client.messaging_endpoint(&["Services"])?;
+            request.apply_query(&mut url);
+            let spec = RequestSpec::from_url(
+                ApiFamily::Messaging,
+                Method::GET,
+                url.clone(),
+                "services.list",
+            );
+            let raw = self.account.send_spec_raw(spec, &sensitive_values)?;
+            self.read_page(&raw.output, &sensitive_values, Some(&url))
+        })
+    }
+
+    /// Fetch a subsequent Services page by Twilio's `meta.next_page_url`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] when the URL is invalid, leaves the configured
+    /// Messaging API base, changes stable filters, or the HTTP request/response
+    /// fails.
+    pub fn list_page_url(self, next_page_url: &str) -> Result<TwilioServicePage, TwilioError> {
+        request_span(
+            &self.account.client.config.messaging_base_url,
+            "services.list_page_url",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = vec![
+                self.account.creds.account_sid,
+                self.account.creds.auth_token,
+                next_page_url,
+            ];
+            let resource = V1PageResource::Services;
+            let url = self.account.client.v1_page_url(next_page_url, resource)?;
+            let spec = RequestSpec::from_url(
+                ApiFamily::Messaging,
+                Method::GET,
+                url.clone(),
+                "services.list_page_url",
+            );
+            let raw = self.account.send_spec_raw(spec, &sensitive_values)?;
+            self.read_page(&raw.output, &sensitive_values, Some(&url))
+        })
+    }
+
+    fn read_page(
+        self,
+        raw: &crate::RawResponse,
+        sensitive_values: &[&str],
+        current_url: Option<&Url>,
+    ) -> Result<TwilioServicePage, TwilioError> {
+        let parsed: WireServicePage = decode_json_response(raw, sensitive_values)?;
+        let page = parsed.into_page();
+        validate_v1_meta_key(&page.meta, V1PageResource::Services)?;
+        validate_next_v1_url_blocking(
+            self.account,
+            page.meta.next_page_url.as_deref(),
+            V1PageResource::Services,
+            current_url,
+        )?;
+        Ok(page)
+    }
+
+    /// Lazily list all Messaging Services using a default page size of 50.
+    #[must_use]
+    pub fn list_all(self) -> BlockingTwilioPaginator<'a, TwilioServicePage, TwilioService> {
+        self.list_all_with(ListServicesRequest::new())
+    }
+
+    /// Lazily list all Messaging Services using the supplied first-page filters.
+    #[must_use]
+    pub fn list_all_with(
+        self,
+        mut request: ListServicesRequest<'a>,
+    ) -> BlockingTwilioPaginator<'a, TwilioServicePage, TwilioService> {
+        if request.page_size.is_none() {
+            request.page_size = Some(DEFAULT_PAGE_SIZE);
+        }
+        BlockingTwilioPaginator::new(
+            move |cursor| {
+                let resource = self;
+                if let Some(cursor) = cursor {
+                    resource.list_page_url(&cursor)
+                } else {
+                    resource.list(request)
+                }
+            },
+            split_service_page,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingServiceResource<'a> {
+    account: BlockingTwilioAccount<'a>,
+    sid: &'a str,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingServiceResource<'a> {
+    pub(crate) fn new(account: BlockingTwilioAccount<'a>, sid: &'a str) -> Self {
+        Self { account, sid }
+    }
+
+    /// `GET /Services/{Sid}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures, non-2xx API responses,
+    /// or malformed JSON responses.
+    pub fn fetch(self) -> Result<TwilioService, TwilioError> {
+        request_span(
+            &self.account.client.config.messaging_base_url,
+            "service.fetch",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = self.sensitive_values();
+            let spec = self.service_spec(Method::GET, "service.fetch")?;
+            let service: WireService = self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(service.into_service())
+        })
+    }
+
+    /// `POST /Services/{Sid}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, or malformed JSON responses.
+    pub fn update(self, request: UpdateServiceRequest<'a>) -> Result<TwilioService, TwilioError> {
+        request_span(
+            &self.account.client.config.messaging_base_url,
+            "service.update",
+            "POST",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds, self.sid);
+            let spec = self
+                .service_spec(Method::POST, "service.update")?
+                .form_params(request.form_params());
+            let service: WireService = self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(service.into_service())
+        })
+    }
+
+    /// `DELETE /Services/{Sid}`.
+    ///
+    /// Deleting a Messaging Service can disrupt A2P 10DLC messaging for that
+    /// service. Twilio returns phone numbers and short codes to the account,
+    /// but A2P campaigns can be deleted and require re-registration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures or non-2xx API responses.
+    pub fn delete(self) -> Result<(), TwilioError> {
+        request_span(
+            &self.account.client.config.messaging_base_url,
+            "service.delete",
+            "DELETE",
+        )
+        .in_scope(|| {
+            let sensitive_values = self.sensitive_values();
+            let spec = self.service_spec(Method::DELETE, "service.delete")?;
+            self.account.send_spec_empty(spec, &sensitive_values)
+        })
+    }
+
+    /// `PhoneNumbers` subresource.
+    #[must_use]
+    pub fn phone_numbers(self) -> BlockingServicePhoneNumbersResource<'a> {
+        BlockingServicePhoneNumbersResource { service: self }
+    }
+
+    /// `ShortCodes` subresource.
+    #[must_use]
+    pub fn short_codes(self) -> BlockingServiceShortCodesResource<'a> {
+        BlockingServiceShortCodesResource { service: self }
+    }
+
+    /// `AlphaSenders` subresource.
+    #[must_use]
+    pub fn alpha_senders(self) -> BlockingServiceAlphaSendersResource<'a> {
+        BlockingServiceAlphaSendersResource { service: self }
+    }
+
+    /// `ChannelSenders` subresource.
+    #[must_use]
+    pub fn channel_senders(self) -> BlockingServiceChannelSendersResource<'a> {
+        BlockingServiceChannelSendersResource { service: self }
+    }
+
+    /// `DestinationAlphaSenders` subresource.
+    #[must_use]
+    pub fn destination_alpha_senders(self) -> BlockingServiceDestinationAlphaSendersResource<'a> {
+        BlockingServiceDestinationAlphaSendersResource { service: self }
+    }
+
+    fn service_url(self) -> Result<Url, TwilioError> {
+        self.account
+            .client
+            .messaging_endpoint(&["Services", self.sid])
+    }
+
+    fn service_spec(
+        self,
+        method: Method,
+        operation: &'static str,
+    ) -> Result<RequestSpec, TwilioError> {
+        Ok(RequestSpec::from_url(
+            ApiFamily::Messaging,
+            method,
+            self.service_url()?,
+            operation,
+        ))
+    }
+
+    fn subresource_collection_url(self, resource: &'static str) -> Result<Url, TwilioError> {
+        self.account
+            .client
+            .messaging_endpoint(&["Services", self.sid, resource])
+    }
+
+    fn subresource_instance_url(
+        self,
+        resource: &'static str,
+        sid: &'a str,
+    ) -> Result<Url, TwilioError> {
+        self.account
+            .client
+            .messaging_endpoint(&["Services", self.sid, resource, sid])
+    }
+
+    fn sensitive_values(self) -> Vec<&'a str> {
+        vec![
+            self.account.creds.account_sid,
+            self.account.creds.auth_token,
+            self.sid,
+        ]
+    }
+}
+
+macro_rules! impl_blocking_sender_resource {
+    (
+        $resource:ident,
+        $create_req:ty,
+        $item:ty,
+        $page:ty,
+        $wire_item:ty,
+        $wire_page:ty,
+        $segment:literal,
+        $kind:ident,
+        $create_map:ident,
+        $page_map:ident,
+        $items_field:ident
+    ) => {
+        #[derive(Clone, Copy)]
+        #[cfg(feature = "sync")]
+        pub struct $resource<'a> {
+            service: BlockingServiceResource<'a>,
+        }
+
+        #[cfg(feature = "sync")]
+        impl<'a> $resource<'a> {
+            /// Create a sender association under this Messaging Service.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`TwilioError`] for invalid requests, transport failures,
+            /// non-2xx API responses, or malformed JSON responses.
+            pub fn create(self, request: $create_req) -> Result<$item, TwilioError> {
+                request_span(
+                    &self.service.account.client.config.messaging_base_url,
+                    concat!("service.", stringify!($items_field), ".create"),
+                    "POST",
+                )
+                .in_scope(|| {
+                    request.validate()?;
+                    let sensitive_values =
+                        request.sensitive_values(self.service.account.creds, self.service.sid);
+                    let spec = self
+                        .subresource_spec(
+                            Method::POST,
+                            concat!("service.", stringify!($items_field), ".create"),
+                        )?
+                        .form_params(request.form_params());
+                    let parsed: $wire_item = self
+                        .service
+                        .account
+                        .send_spec_json(spec, &sensitive_values)?;
+                    Ok(parsed.$create_map())
+                })
+            }
+
+            /// Fetch one sender association under this Messaging Service.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`TwilioError`] for transport failures, non-2xx API
+            /// responses, or malformed JSON responses.
+            pub fn fetch(self, sid: &'a str) -> Result<$item, TwilioError> {
+                request_span(
+                    &self.service.account.client.config.messaging_base_url,
+                    concat!("service.", stringify!($items_field), ".fetch"),
+                    "GET",
+                )
+                .in_scope(|| {
+                    let sensitive_values = vec![
+                        self.service.account.creds.account_sid,
+                        self.service.account.creds.auth_token,
+                        self.service.sid,
+                        sid,
+                    ];
+                    let spec = self.subresource_instance_spec(
+                        sid,
+                        Method::GET,
+                        concat!("service.", stringify!($items_field), ".fetch"),
+                    )?;
+                    let parsed: $wire_item = self
+                        .service
+                        .account
+                        .send_spec_json(spec, &sensitive_values)?;
+                    Ok(parsed.$create_map())
+                })
+            }
+
+            /// List sender associations under this Messaging Service.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`TwilioError`] for invalid requests, transport failures,
+            /// non-2xx API responses, malformed JSON responses, or invalid
+            /// pagination metadata.
+            pub fn list(
+                self,
+                request: ListServiceSubresourcesRequest<'a>,
+            ) -> Result<$page, TwilioError> {
+                request_span(
+                    &self.service.account.client.config.messaging_base_url,
+                    concat!("service.", stringify!($items_field), ".list"),
+                    "GET",
+                )
+                .in_scope(|| {
+                    request.validate()?;
+                    let sensitive_values =
+                        request.sensitive_values(self.service.account.creds, self.service.sid);
+                    let mut url = self.service.subresource_collection_url($segment)?;
+                    request.apply_query(&mut url);
+                    let spec = RequestSpec::from_url(
+                        ApiFamily::Messaging,
+                        Method::GET,
+                        url.clone(),
+                        concat!("service.", stringify!($items_field), ".list"),
+                    );
+                    let raw = self
+                        .service
+                        .account
+                        .send_spec_raw(spec, &sensitive_values)?;
+                    self.read_page(&raw.output, &sensitive_values, Some(&url))
+                })
+            }
+
+            /// Fetch a subsequent page by Twilio's `meta.next_page_url`.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`TwilioError`] when the URL is invalid, leaves the
+            /// configured Messaging API base, changes stable filters, or the
+            /// HTTP request/response fails.
+            pub fn list_page_url(self, next_page_url: &str) -> Result<$page, TwilioError> {
+                request_span(
+                    &self.service.account.client.config.messaging_base_url,
+                    concat!("service.", stringify!($items_field), ".list_page_url"),
+                    "GET",
+                )
+                .in_scope(|| {
+                    let sensitive_values = vec![
+                        self.service.account.creds.account_sid,
+                        self.service.account.creds.auth_token,
+                        self.service.sid,
+                        next_page_url,
+                    ];
+                    let resource = V1PageResource::$kind {
+                        service_sid: self.service.sid,
+                    };
+                    let url = self
+                        .service
+                        .account
+                        .client
+                        .v1_page_url(next_page_url, resource)?;
+                    let spec = RequestSpec::from_url(
+                        ApiFamily::Messaging,
+                        Method::GET,
+                        url.clone(),
+                        concat!("service.", stringify!($items_field), ".list_page_url"),
+                    );
+                    let raw = self
+                        .service
+                        .account
+                        .send_spec_raw(spec, &sensitive_values)?;
+                    self.read_page(&raw.output, &sensitive_values, Some(&url))
+                })
+            }
+
+            /// Delete one sender association under this Messaging Service.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`TwilioError`] for transport failures or non-2xx API
+            /// responses.
+            pub fn delete(self, sid: &'a str) -> Result<(), TwilioError> {
+                request_span(
+                    &self.service.account.client.config.messaging_base_url,
+                    concat!("service.", stringify!($items_field), ".delete"),
+                    "DELETE",
+                )
+                .in_scope(|| {
+                    let sensitive_values = vec![
+                        self.service.account.creds.account_sid,
+                        self.service.account.creds.auth_token,
+                        self.service.sid,
+                        sid,
+                    ];
+                    let spec = self.subresource_instance_spec(
+                        sid,
+                        Method::DELETE,
+                        concat!("service.", stringify!($items_field), ".delete"),
+                    )?;
+                    self.service
+                        .account
+                        .send_spec_empty(spec, &sensitive_values)
+                })
+            }
+
+            fn read_page(
+                self,
+                raw: &crate::RawResponse,
+                sensitive_values: &[&str],
+                current_url: Option<&Url>,
+            ) -> Result<$page, TwilioError> {
+                let parsed: $wire_page = decode_json_response(raw, sensitive_values)?;
+                let page = parsed.$page_map();
+                let resource = V1PageResource::$kind {
+                    service_sid: self.service.sid,
+                };
+                validate_v1_meta_key(&page.meta, resource)?;
+                validate_next_v1_url_blocking(
+                    self.service.account,
+                    page.meta.next_page_url.as_deref(),
+                    resource,
+                    current_url,
+                )?;
+                Ok(page)
+            }
+
+            fn subresource_spec(
+                self,
+                method: Method,
+                operation: &'static str,
+            ) -> Result<RequestSpec, TwilioError> {
+                Ok(RequestSpec::from_url(
+                    ApiFamily::Messaging,
+                    method,
+                    self.service.subresource_collection_url($segment)?,
+                    operation,
+                ))
+            }
+
+            fn subresource_instance_spec(
+                self,
+                sid: &'a str,
+                method: Method,
+                operation: &'static str,
+            ) -> Result<RequestSpec, TwilioError> {
+                Ok(RequestSpec::from_url(
+                    ApiFamily::Messaging,
+                    method,
+                    self.service.subresource_instance_url($segment, sid)?,
+                    operation,
+                ))
+            }
+
+            /// Lazily list all sender associations using a default page size of 50.
+            #[must_use]
+            pub fn list_all(self) -> BlockingTwilioPaginator<'a, $page, $item> {
+                self.list_all_with(ListServiceSubresourcesRequest::new())
+            }
+
+            /// Lazily list all sender associations using supplied first-page filters.
+            #[must_use]
+            pub fn list_all_with(
+                self,
+                mut request: ListServiceSubresourcesRequest<'a>,
+            ) -> BlockingTwilioPaginator<'a, $page, $item> {
+                if request.page_size.is_none() {
+                    request.page_size = Some(DEFAULT_PAGE_SIZE);
+                }
+                BlockingTwilioPaginator::new(
+                    move |cursor| {
+                        let resource = self;
+                        if let Some(cursor) = cursor {
+                            resource.list_page_url(&cursor)
+                        } else {
+                            resource.list(request)
+                        }
+                    },
+                    |page| (page.$items_field, page.meta.next_page_url),
+                )
+            }
+        }
+    };
+}
+
+impl_blocking_sender_resource!(
+    BlockingServicePhoneNumbersResource,
+    CreateServicePhoneNumberRequest<'a>,
+    TwilioServicePhoneNumber,
+    TwilioServicePhoneNumberPage,
+    WireServicePhoneNumber,
+    WirePhoneNumberPage,
+    "PhoneNumbers",
+    PhoneNumbers,
+    into_phone_number,
+    into_page,
+    phone_numbers
+);
+
+impl_blocking_sender_resource!(
+    BlockingServiceShortCodesResource,
+    CreateServiceShortCodeRequest<'a>,
+    TwilioServiceShortCode,
+    TwilioServiceShortCodePage,
+    WireServiceShortCode,
+    WireShortCodePage,
+    "ShortCodes",
+    ShortCodes,
+    into_short_code,
+    into_page,
+    short_codes
+);
+
+impl_blocking_sender_resource!(
+    BlockingServiceAlphaSendersResource,
+    CreateAlphaSenderRequest<'a>,
+    TwilioAlphaSender,
+    TwilioAlphaSenderPage,
+    WireAlphaSender,
+    WireAlphaSenderPage,
+    "AlphaSenders",
+    AlphaSenders,
+    into_alpha_sender,
+    into_page,
+    alpha_senders
+);
+
+impl_blocking_sender_resource!(
+    BlockingServiceChannelSendersResource,
+    CreateChannelSenderRequest<'a>,
+    TwilioChannelSender,
+    TwilioChannelSenderPage,
+    WireChannelSender,
+    WireChannelSenderPage,
+    "ChannelSenders",
+    ChannelSenders,
+    into_channel_sender,
+    into_page,
+    senders
+);
+
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingServiceDestinationAlphaSendersResource<'a> {
+    service: BlockingServiceResource<'a>,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingServiceDestinationAlphaSendersResource<'a> {
+    /// Create a `DestinationAlphaSender` under this Messaging Service.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, or malformed JSON responses.
+    pub fn create(
+        self,
+        request: CreateDestinationAlphaSenderRequest<'a>,
+    ) -> Result<TwilioDestinationAlphaSender, TwilioError> {
+        request_span(
+            &self.service.account.client.config.messaging_base_url,
+            "service.destination_alpha_senders.create",
+            "POST",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values =
+                request.sensitive_values(self.service.account.creds, self.service.sid);
+            let spec = self
+                .destination_spec(Method::POST, "service.destination_alpha_senders.create")?
+                .form_params(request.form_params());
+            let parsed: WireDestinationAlphaSender = self
+                .service
+                .account
+                .send_spec_json(spec, &sensitive_values)?;
+            Ok(parsed.into_destination_alpha_sender())
+        })
+    }
+
+    /// Fetch one `DestinationAlphaSender` under this Messaging Service.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures, non-2xx API responses,
+    /// or malformed JSON responses.
+    pub fn fetch(self, sid: &'a str) -> Result<TwilioDestinationAlphaSender, TwilioError> {
+        request_span(
+            &self.service.account.client.config.messaging_base_url,
+            "service.destination_alpha_senders.fetch",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = vec![
+                self.service.account.creds.account_sid,
+                self.service.account.creds.auth_token,
+                self.service.sid,
+                sid,
+            ];
+            let spec = self.destination_instance_spec(
+                sid,
+                Method::GET,
+                "service.destination_alpha_senders.fetch",
+            )?;
+            let parsed: WireDestinationAlphaSender = self
+                .service
+                .account
+                .send_spec_json(spec, &sensitive_values)?;
+            Ok(parsed.into_destination_alpha_sender())
+        })
+    }
+
+    /// List `DestinationAlphaSenders` under this Messaging Service.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, malformed JSON responses, or invalid pagination
+    /// metadata.
+    pub fn list(
+        self,
+        request: ListDestinationAlphaSendersRequest<'a>,
+    ) -> Result<TwilioDestinationAlphaSenderPage, TwilioError> {
+        request_span(
+            &self.service.account.client.config.messaging_base_url,
+            "service.destination_alpha_senders.list",
+            "GET",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values =
+                request.sensitive_values(self.service.account.creds, self.service.sid);
+            let mut url = self
+                .service
+                .subresource_collection_url("DestinationAlphaSenders")?;
+            request.apply_query(&mut url);
+            let spec = RequestSpec::from_url(
+                ApiFamily::Messaging,
+                Method::GET,
+                url.clone(),
+                "service.destination_alpha_senders.list",
+            );
+            let raw = self
+                .service
+                .account
+                .send_spec_raw(spec, &sensitive_values)?;
+            self.read_page(&raw.output, &sensitive_values, Some(&url))
+        })
+    }
+
+    /// Fetch a subsequent page by Twilio's `meta.next_page_url`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] when the URL is invalid, leaves the configured
+    /// Messaging API base, changes stable filters, or the HTTP request/response
+    /// fails.
+    pub fn list_page_url(
+        self,
+        next_page_url: &str,
+    ) -> Result<TwilioDestinationAlphaSenderPage, TwilioError> {
+        request_span(
+            &self.service.account.client.config.messaging_base_url,
+            "service.destination_alpha_senders.list_page_url",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = vec![
+                self.service.account.creds.account_sid,
+                self.service.account.creds.auth_token,
+                self.service.sid,
+                next_page_url,
+            ];
+            let resource = V1PageResource::DestinationAlphaSenders {
+                service_sid: self.service.sid,
+            };
+            let url = self
+                .service
+                .account
+                .client
+                .v1_page_url(next_page_url, resource)?;
+            let spec = RequestSpec::from_url(
+                ApiFamily::Messaging,
+                Method::GET,
+                url.clone(),
+                "service.destination_alpha_senders.list_page_url",
+            );
+            let raw = self
+                .service
+                .account
+                .send_spec_raw(spec, &sensitive_values)?;
+            self.read_page(&raw.output, &sensitive_values, Some(&url))
+        })
+    }
+
+    /// Delete one `DestinationAlphaSender` under this Messaging Service.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures or non-2xx API responses.
+    pub fn delete(self, sid: &'a str) -> Result<(), TwilioError> {
+        request_span(
+            &self.service.account.client.config.messaging_base_url,
+            "service.destination_alpha_senders.delete",
+            "DELETE",
+        )
+        .in_scope(|| {
+            let sensitive_values = vec![
+                self.service.account.creds.account_sid,
+                self.service.account.creds.auth_token,
+                self.service.sid,
+                sid,
+            ];
+            let spec = self.destination_instance_spec(
+                sid,
+                Method::DELETE,
+                "service.destination_alpha_senders.delete",
+            )?;
+            self.service
+                .account
+                .send_spec_empty(spec, &sensitive_values)
+        })
+    }
+
+    fn read_page(
+        self,
+        raw: &crate::RawResponse,
+        sensitive_values: &[&str],
+        current_url: Option<&Url>,
+    ) -> Result<TwilioDestinationAlphaSenderPage, TwilioError> {
+        let parsed: WireDestinationAlphaSenderPage = decode_json_response(raw, sensitive_values)?;
+        let page = parsed.into_page();
+        let resource = V1PageResource::DestinationAlphaSenders {
+            service_sid: self.service.sid,
+        };
+        validate_v1_meta_key(&page.meta, resource)?;
+        validate_next_v1_url_blocking(
+            self.service.account,
+            page.meta.next_page_url.as_deref(),
+            resource,
+            current_url,
+        )?;
+        Ok(page)
+    }
+
+    fn destination_spec(
+        self,
+        method: Method,
+        operation: &'static str,
+    ) -> Result<RequestSpec, TwilioError> {
+        Ok(RequestSpec::from_url(
+            ApiFamily::Messaging,
+            method,
+            self.service
+                .subresource_collection_url("DestinationAlphaSenders")?,
+            operation,
+        ))
+    }
+
+    fn destination_instance_spec(
+        self,
+        sid: &'a str,
+        method: Method,
+        operation: &'static str,
+    ) -> Result<RequestSpec, TwilioError> {
+        Ok(RequestSpec::from_url(
+            ApiFamily::Messaging,
+            method,
+            self.service
+                .subresource_instance_url("DestinationAlphaSenders", sid)?,
+            operation,
+        ))
+    }
+
+    /// Lazily list all destination alpha senders using a default page size of 50.
+    #[must_use]
+    pub fn list_all(
+        self,
+    ) -> BlockingTwilioPaginator<'a, TwilioDestinationAlphaSenderPage, TwilioDestinationAlphaSender>
+    {
+        self.list_all_with(ListDestinationAlphaSendersRequest::new())
+    }
+
+    /// Lazily list all destination alpha senders using supplied first-page filters.
+    #[must_use]
+    pub fn list_all_with(
+        self,
+        mut request: ListDestinationAlphaSendersRequest<'a>,
+    ) -> BlockingTwilioPaginator<'a, TwilioDestinationAlphaSenderPage, TwilioDestinationAlphaSender>
+    {
+        if request.page_size.is_none() {
+            request.page_size = Some(DEFAULT_PAGE_SIZE);
+        }
+        BlockingTwilioPaginator::new(
+            move |cursor| {
+                let resource = self;
+                if let Some(cursor) = cursor {
+                    resource.list_page_url(&cursor)
+                } else {
+                    resource.list(request)
+                }
             },
             |page| (page.alpha_senders, page.meta.next_page_url),
         )

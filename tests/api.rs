@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 #![allow(clippy::unwrap_used, clippy::missing_panics_doc)]
 
 use std::collections::BTreeMap;

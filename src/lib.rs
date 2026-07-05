@@ -1,4 +1,4 @@
-//! `twilio2` is a thin `reqwest` client for Twilio Programmable Messaging.
+//! `twilio2` is a thin async and blocking client for Twilio Programmable Messaging.
 //!
 //! Account SID + Auth Token credentials are passed to account-scoped handles
 //! using HTTP basic auth and are never stored on [`TwilioClient`]. Request
@@ -14,7 +14,7 @@
 //!
 //! ## Messages
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use twilio2::{
 //!     CreateMessageRequest, ListMessagesRequest, TwilioClient, TwilioCreds,
 //!     UpdateMessageRequest,
@@ -52,9 +52,37 @@
 //! # }
 //! ```
 //!
-//! ## Messaging Services
+//! ## Blocking Messages
 //!
 //! ```rust,no_run
+//! # #[cfg(feature = "sync")]
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! use twilio2::{BlockingTwilioClient, CreateMessageRequest, TwilioCreds};
+//!
+//! let client = BlockingTwilioClient::from_config(Default::default())?;
+//! let creds = TwilioCreds {
+//!     account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+//!     auth_token: "secret",
+//! };
+//! let account = client.account(creds);
+//!
+//! let created = account
+//!     .messages()
+//!     .create(
+//!         CreateMessageRequest::new("+15551234567")
+//!             .from("+15557654321")
+//!             .body("hello"),
+//!     )?;
+//! let all = account.messages().list_all().collect_all()?;
+//!
+//! # let _ = (created, all);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Messaging Services
+//!
+//! ```rust,ignore
 //! use twilio2::{
 //!     CreateServiceRequest, HttpMethod, ListServicesRequest, TwilioClient,
 //!     TwilioCreds, UpdateServiceRequest,
@@ -104,7 +132,7 @@
 //!
 //! ## Service subresources
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use twilio2::{
 //!     CreateDestinationAlphaSenderRequest, CreateServicePhoneNumberRequest,
 //!     ListDestinationAlphaSendersRequest, ListServiceSubresourcesRequest,
@@ -155,7 +183,7 @@
 //!
 //! ## Custom base URLs
 //!
-//! ```rust
+//! ```rust,ignore
 //! use twilio2::{TwilioClient, TwilioClientConfig};
 //!
 //! # fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -177,6 +205,14 @@ compile_error!(
     "twilio2 requires HTTPS support. Enable default features, or enable one of: rustls, native-tls, rustls-no-provider."
 );
 
+#[cfg(not(any(feature = "async", feature = "sync")))]
+compile_error!(
+    "twilio2 requires a transport API. Enable default features, or enable one of: async, sync."
+);
+
+#[cfg(feature = "sync")]
+mod blocking_client;
+#[cfg(feature = "async")]
 mod client;
 mod common;
 mod deactivations;
@@ -187,14 +223,25 @@ mod services;
 mod short_codes;
 mod tollfree_verifications;
 
+#[cfg(feature = "sync")]
+pub use blocking_client::{BlockingTwilioAccount, BlockingTwilioClient};
+#[cfg(feature = "async")]
 pub use client::{TwilioAccount, TwilioClient};
+#[cfg(feature = "sync")]
+pub use common::BlockingTwilioPaginator;
+#[cfg(feature = "async")]
+pub use common::TwilioPaginator;
 pub use common::{
     ApiFamily, ApiResponse, DEFAULT_MESSAGING_BASE_URL, DEFAULT_PAGE_SIZE, DEFAULT_REST_BASE_URL,
     Operation, RawResponse, RequestOptions, RequestSpec, ResponseMeta, RetryPolicy,
-    TwilioClientConfig, TwilioConfig, TwilioCreds, TwilioError, TwilioMediaContent,
-    TwilioPaginator, V1PageMeta, decode_json_response,
+    TwilioClientConfig, TwilioConfig, TwilioCreds, TwilioError, TwilioMediaContent, V1PageMeta,
+    decode_json_response,
 };
-pub use deactivations::{DeactivationsResource, FetchDeactivationsRequest, TwilioDeactivation};
+#[cfg(feature = "sync")]
+pub use deactivations::BlockingDeactivationsResource;
+#[cfg(feature = "async")]
+pub use deactivations::DeactivationsResource;
+pub use deactivations::{FetchDeactivationsRequest, TwilioDeactivation};
 #[cfg(feature = "sensitive-diagnostics")]
 pub use diagnostics::{
     SensitiveDiagnosticEvent, SensitiveDiagnosticSink, SensitiveDiagnostics,
@@ -203,31 +250,59 @@ pub use diagnostics::{
 };
 pub use messages::{
     AddressRetention, ContentRetention, CreateMessageFeedbackRequest, CreateMessageRequest,
-    ListMediaRequest, ListMessagesRequest, MessageFeedbackOutcome, MessageFeedbackResource,
-    MessageMediaResource, MessageResource, MessagesResource, RiskCheck, ScheduleType, TrafficType,
-    TwilioMedia, TwilioMediaPage, TwilioMessage, TwilioMessageFeedback, TwilioMessagePage,
-    UpdateMessageRequest, UpdateMessageStatus,
+    ListMediaRequest, ListMessagesRequest, MessageFeedbackOutcome, RiskCheck, ScheduleType,
+    TrafficType, TwilioMedia, TwilioMediaPage, TwilioMessage, TwilioMessageFeedback,
+    TwilioMessagePage, UpdateMessageRequest, UpdateMessageStatus,
+};
+#[cfg(feature = "sync")]
+pub use messages::{
+    BlockingMessageFeedbackResource, BlockingMessageMediaResource, BlockingMessageResource,
+    BlockingMessagesResource,
+};
+#[cfg(feature = "async")]
+pub use messages::{
+    MessageFeedbackResource, MessageMediaResource, MessageResource, MessagesResource,
+};
+#[cfg(feature = "sync")]
+pub use services::{
+    BlockingServiceAlphaSendersResource, BlockingServiceChannelSendersResource,
+    BlockingServiceDestinationAlphaSendersResource, BlockingServicePhoneNumbersResource,
+    BlockingServiceResource, BlockingServiceShortCodesResource, BlockingServicesResource,
 };
 pub use services::{
     CreateAlphaSenderRequest, CreateChannelSenderRequest, CreateDestinationAlphaSenderRequest,
     CreateServicePhoneNumberRequest, CreateServiceRequest, CreateServiceShortCodeRequest,
     HttpMethod, ListDestinationAlphaSendersRequest, ListServiceSubresourcesRequest,
-    ListServicesRequest, ScanMessageContent, ServiceAlphaSendersResource,
-    ServiceChannelSendersResource, ServiceDestinationAlphaSendersResource,
-    ServicePhoneNumbersResource, ServiceResource, ServiceShortCodesResource, ServiceUsecase,
-    ServicesResource, TwilioAlphaSender, TwilioAlphaSenderPage, TwilioChannelSender,
-    TwilioChannelSenderPage, TwilioDestinationAlphaSender, TwilioDestinationAlphaSenderPage,
-    TwilioService, TwilioServicePage, TwilioServicePhoneNumber, TwilioServicePhoneNumberPage,
+    ListServicesRequest, ScanMessageContent, ServiceUsecase, TwilioAlphaSender,
+    TwilioAlphaSenderPage, TwilioChannelSender, TwilioChannelSenderPage,
+    TwilioDestinationAlphaSender, TwilioDestinationAlphaSenderPage, TwilioService,
+    TwilioServicePage, TwilioServicePhoneNumber, TwilioServicePhoneNumberPage,
     TwilioServiceShortCode, TwilioServiceShortCodePage, UpdateServiceRequest,
 };
+#[cfg(feature = "async")]
+pub use services::{
+    ServiceAlphaSendersResource, ServiceChannelSendersResource,
+    ServiceDestinationAlphaSendersResource, ServicePhoneNumbersResource, ServiceResource,
+    ServiceShortCodesResource, ServicesResource,
+};
+#[cfg(feature = "async")]
+pub use short_codes::{AccountShortCodeResource, AccountShortCodesResource};
+#[cfg(feature = "sync")]
+pub use short_codes::{BlockingAccountShortCodeResource, BlockingAccountShortCodesResource};
 pub use short_codes::{
-    AccountShortCodeResource, AccountShortCodesResource, ListAccountShortCodesRequest,
-    TwilioAccountShortCode, TwilioAccountShortCodePage, UpdateAccountShortCodeRequest,
+    ListAccountShortCodesRequest, TwilioAccountShortCode, TwilioAccountShortCodePage,
+    UpdateAccountShortCodeRequest,
+};
+#[cfg(feature = "sync")]
+pub use tollfree_verifications::{
+    BlockingTollfreeVerificationResource, BlockingTollfreeVerificationsResource,
 };
 pub use tollfree_verifications::{
     CreateTollfreeVerificationRequest, ListTollfreeVerificationsRequest,
     TollfreeBusinessRegistrationAuthority, TollfreeBusinessType, TollfreeMessageVolume,
-    TollfreeOptInType, TollfreeUseCaseCategory, TollfreeVerificationResource,
-    TollfreeVerificationStatus, TollfreeVerificationsResource, TollfreeVettingProvider,
-    TwilioTollfreeVerification, TwilioTollfreeVerificationPage, UpdateTollfreeVerificationRequest,
+    TollfreeOptInType, TollfreeUseCaseCategory, TollfreeVerificationStatus,
+    TollfreeVettingProvider, TwilioTollfreeVerification, TwilioTollfreeVerificationPage,
+    UpdateTollfreeVerificationRequest,
 };
+#[cfg(feature = "async")]
+pub use tollfree_verifications::{TollfreeVerificationResource, TollfreeVerificationsResource};

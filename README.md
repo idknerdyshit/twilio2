@@ -1,6 +1,6 @@
 # twilio2
 
-`twilio2` is a small `reqwest` client for Twilio Programmable Messaging.
+`twilio2` is a small async and blocking client for Twilio Programmable Messaging.
 
 It covers:
 
@@ -14,8 +14,8 @@ It covers:
   ChannelSenders, and DestinationAlphaSenders
 - Messaging v1 Toll-free Verifications: create, fetch, list, update, and delete
 
-The client stores only a shared `reqwest::Client` and parsed base URLs. Account
-SID and Auth Token values are passed through `TwilioCreds` to an account-scoped
+The client stores only shared transport state and parsed base URLs. Account SID
+and Auth Token values are passed through `TwilioCreds` to an account-scoped
 handle; the auth token is redacted from `Debug` output. API-key authentication,
 inbound webhook parsing, signature verification, A2P Compliance resources, and
 higher-level provider traits are intentionally outside this crate.
@@ -26,32 +26,34 @@ configured proxy origin or pagination will be rejected.
 
 ## Setup
 
-`twilio2` can build its own pooled `reqwest::Client` from `TwilioClientConfig`,
-or accept an injected `reqwest::Client` when your application already owns
-transport setup. The crate enables `reqwest`'s rustls backend by default so
-HTTPS works out of the box:
+`twilio2` enables the async `reqwest` API and rustls by default:
 
 ```toml
 [dependencies]
 twilio2 = "0.2"
-reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 ```
 
-To use a different TLS backend, disable default features and choose one
-explicitly:
+For a blocking API, disable defaults and choose `sync` plus a TLS backend:
 
 ```toml
 [dependencies]
-twilio2 = { version = "0.2", default-features = false, features = ["native-tls"] }
-reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+twilio2 = { version = "0.2", default-features = false, features = ["sync", "rustls"] }
+```
+
+For an async API with a different TLS backend, disable default features and
+choose `async` plus that backend:
+
+```toml
+[dependencies]
+twilio2 = { version = "0.2", default-features = false, features = ["async", "native-tls"] }
 ```
 
 The `rustls-no-provider` feature is also available for applications that install
-their own rustls crypto provider before constructing `reqwest::Client`.
+their own rustls crypto provider.
 
-Cargo features are additive. If you enable `native-tls` or `rustls-no-provider`
-without disabling default features, Cargo will also compile the default `rustls`
-backend.
+Cargo features are additive. You may enable both `async` and `sync`, and TLS
+features are not mutually exclusive. If default features are disabled, enable at
+least one of `async`/`sync` and at least one TLS backend.
 
 ## API Shape
 
@@ -89,6 +91,31 @@ if let Some(sid) = message.sid {
 # let _ = all;
 # Ok(())
 # }
+```
+
+The blocking API mirrors the async API and removes only `.await`:
+
+```rust,no_run
+use twilio2::{BlockingTwilioClient, CreateMessageRequest, TwilioCreds};
+
+fn example() -> Result<(), Box<dyn std::error::Error>> {
+let client = BlockingTwilioClient::from_config(Default::default())?;
+let creds = TwilioCreds {
+    account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    auth_token: "secret",
+};
+
+let request = CreateMessageRequest::new("+15551234567")
+    .from("+15557654321")
+    .body("hello");
+
+let account = client.account(creds);
+let created = account.messages().create(request)?;
+let all = account.messages().list_all().collect_all()?;
+
+# let _ = (created, all);
+Ok(())
+}
 ```
 
 Messaging Services use Twilio's Messaging v1 API:
@@ -137,6 +164,10 @@ let client = TwilioClient::from_config_and_http_client(config, reqwest::Client::
 `TwilioClient::new(reqwest::Client)` and
 `TwilioClient::try_with_config(reqwest::Client, TwilioConfig)` remain available
 as compatibility constructors.
+
+For blocking callers, use `BlockingTwilioClient::from_config_and_agent`,
+`BlockingTwilioClient::from_agent`, or
+`BlockingTwilioClient::try_with_config(ureq::Agent, TwilioConfig)`.
 
 ## Examples
 

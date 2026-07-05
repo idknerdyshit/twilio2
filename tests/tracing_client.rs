@@ -1,5 +1,6 @@
 //! Structured tracing contract tests for the Twilio HTTP executor.
 
+#![cfg(any(feature = "async", feature = "sync"))]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -14,19 +15,26 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use reqwest::Method;
+use http::Method;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Record};
 use tracing::{Event, Id, Subscriber};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
+#[cfg(feature = "sync")]
+use twilio2::BlockingTwilioClient;
+#[cfg(feature = "async")]
+use twilio2::TwilioClient;
 use twilio2::{
-    ApiFamily, Operation, RawResponse, RequestOptions, RequestSpec, RetryPolicy, TwilioClient,
-    TwilioError,
+    ApiFamily, Operation, RawResponse, RequestOptions, RequestSpec, RetryPolicy, TwilioError,
 };
 
-use support::{HttpsMockServer, MockResponse, client_for, test_creds, unused_https_base_url};
+use support::{HttpsMockServer, MockResponse, test_creds};
+#[cfg(feature = "sync")]
+use support::{blocking_client_for, test_agent};
+#[cfg(feature = "async")]
+use support::{client_for, unused_https_base_url};
 
 const TRACE_TARGET: &str = "twilio2::trace";
 const SAFE_TRACE_LABEL: &str = "job-42";
@@ -233,6 +241,19 @@ fn capture_traces() -> (TraceCapture, impl Drop) {
     (capture, guard)
 }
 
+#[cfg(feature = "sync")]
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Runtime::new().unwrap()
+}
+
+#[cfg(feature = "sync")]
+fn start_server(
+    runtime: &tokio::runtime::Runtime,
+    responses: Vec<MockResponse>,
+) -> HttpsMockServer {
+    runtime.block_on(HttpsMockServer::start(responses))
+}
+
 #[derive(Clone, Copy)]
 struct JsonOperation {
     operation: &'static str,
@@ -273,8 +294,10 @@ impl Operation for JsonOperation {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
 struct InvalidRequestOperation;
 
+#[cfg(feature = "async")]
 impl Operation for InvalidRequestOperation {
     type Output = serde_json::Value;
 
@@ -342,6 +365,7 @@ fn assert_redacted(capture: &TraceCapture, forbidden: &[&str]) {
     }
 }
 
+#[cfg(feature = "async")]
 #[tokio::test(flavor = "current_thread")]
 async fn success_emits_attempt_span_and_operation_success() {
     let server = HttpsMockServer::start(vec![MockResponse::json(r#"{"ok":true}"#)]).await;
@@ -361,6 +385,7 @@ async fn success_emits_attempt_span_and_operation_success() {
     assert_redacted(&capture, &[&server.base_url, "token", "AC123"]);
 }
 
+#[cfg(feature = "async")]
 #[tokio::test(flavor = "current_thread")]
 async fn safe_trace_label_is_emitted_and_sensitive_label_is_omitted() {
     let server = HttpsMockServer::start(vec![
@@ -417,6 +442,7 @@ async fn safe_trace_label_is_emitted_and_sensitive_label_is_omitted() {
     assert_single_span(&sensitive_capture, None);
 }
 
+#[cfg(feature = "async")]
 #[tokio::test(flavor = "current_thread")]
 async fn api_failure_emits_attempt_response_and_operation_failure() {
     let server = HttpsMockServer::start(vec![MockResponse::status_json(
@@ -448,6 +474,7 @@ async fn api_failure_emits_attempt_response_and_operation_failure() {
     assert_redacted(&capture, &[&server.base_url, SENSITIVE_RESPONSE, "token"]);
 }
 
+#[cfg(feature = "async")]
 #[tokio::test(flavor = "current_thread")]
 async fn malformed_2xx_decode_failure_emits_operation_failure() {
     let server = HttpsMockServer::start(vec![MockResponse::json(r#"{"ok":"#)]).await;
@@ -474,6 +501,7 @@ async fn malformed_2xx_decode_failure_emits_operation_failure() {
     assert_eq!(failure.field("error_kind"), "decode");
 }
 
+#[cfg(feature = "async")]
 #[tokio::test(flavor = "current_thread")]
 async fn retry_event_links_transient_failure_to_success() {
     let server = HttpsMockServer::start(vec![
@@ -521,6 +549,7 @@ async fn retry_event_links_transient_failure_to_success() {
     assert_eq!(success.field("status"), "200");
 }
 
+#[cfg(feature = "async")]
 #[tokio::test(flavor = "current_thread")]
 async fn transport_failure_is_redacted_and_structured() {
     let base_url = unused_https_base_url().await;
@@ -565,6 +594,7 @@ async fn transport_failure_is_redacted_and_structured() {
     assert_redacted(&capture, &[&base_url, "token", "AC123"]);
 }
 
+#[cfg(feature = "async")]
 #[tokio::test(flavor = "current_thread")]
 async fn request_build_failure_omits_sensitive_trace_label() {
     let (capture, _guard) = capture_traces();
@@ -585,4 +615,151 @@ async fn request_build_failure_omits_sensitive_trace_label() {
     assert_eq!(failure.field("attempts"), "0");
     assert_eq!(failure.field("error_kind"), "invalid_request");
     assert!(!failure.fields.contains_key("trace_label"));
+}
+
+#[cfg(feature = "sync")]
+#[test]
+fn sync_success_emits_attempt_span_and_operation_success() {
+    let runtime = runtime();
+    let server = start_server(&runtime, vec![MockResponse::json(r#"{"ok":true}"#)]);
+    let (capture, _guard) = capture_traces();
+
+    blocking_client_for(&server)
+        .account(test_creds())
+        .send_with_options(
+            JsonOperation::new("test.messages.list"),
+            RequestOptions::new(),
+        )
+        .unwrap();
+
+    assert_success_capture(&capture, "0", "1");
+    assert_single_span(&capture, None);
+    assert_redacted(&capture, &[&server.base_url, "token", "AC123"]);
+}
+
+#[cfg(feature = "sync")]
+#[test]
+fn sync_api_failure_emits_attempt_response_and_operation_failure() {
+    let runtime = runtime();
+    let server = start_server(
+        &runtime,
+        vec![MockResponse::status_json(
+            400,
+            format!(r#"{{"message":"bad {SENSITIVE_RESPONSE}"}}"#),
+        )],
+    );
+    let (capture, _guard) = capture_traces();
+
+    let err = blocking_client_for(&server)
+        .account(test_creds())
+        .send_with_options(
+            JsonOperation::new("test.messages.list"),
+            RequestOptions::new(),
+        )
+        .unwrap_err();
+
+    assert!(matches!(err, TwilioError::Api { status: 400, .. }));
+    let attempt = capture.one_event("twilio2.request.attempt.response");
+    assert_eq!(attempt.field("status"), "400");
+    let failure = capture.one_event("twilio2.operation.failure");
+    failure.assert_level("WARN");
+    assert_eq!(failure.field("method"), "GET");
+    assert_eq!(failure.field("operation"), "test.messages.list");
+    assert_eq!(failure.field("attempts"), "1");
+    assert_eq!(failure.field("status"), "400");
+    assert_eq!(failure.field("error_kind"), "api");
+    assert_redacted(&capture, &[&server.base_url, SENSITIVE_RESPONSE, "token"]);
+}
+
+#[cfg(feature = "sync")]
+#[test]
+fn sync_retry_event_links_transient_failure_to_success() {
+    let runtime = runtime();
+    let server = start_server(
+        &runtime,
+        vec![
+            MockResponse::status_json(503, r#"{"message":"unavailable"}"#),
+            MockResponse::json(r#"{"ok":true}"#),
+        ],
+    );
+    let (capture, _guard) = capture_traces();
+
+    blocking_client_for(&server)
+        .account(test_creds())
+        .send_with_options(
+            JsonOperation::new("test.messages.list"),
+            RequestOptions::new().retry(
+                RetryPolicy::none()
+                    .with_max_retries(1)
+                    .with_base_delay(Duration::from_millis(0))
+                    .with_jitter(false),
+            ),
+        )
+        .unwrap();
+
+    let attempts = capture.events_named("twilio2.request.attempt.response");
+    assert_eq!(attempts.len(), 2, "{attempts:#?}");
+    assert_eq!(attempts[0].field("attempt"), "1");
+    assert_eq!(attempts[0].field("status"), "503");
+    assert_eq!(attempts[1].field("attempt"), "2");
+    assert_eq!(attempts[1].field("status"), "200");
+
+    let retry = capture.one_event("twilio2.request.retry");
+    retry.assert_level("WARN");
+    assert_eq!(retry.field("method"), "GET");
+    assert_eq!(retry.field("attempt"), "1");
+    assert_eq!(retry.field("next_attempt"), "2");
+    assert_eq!(retry.field("max_retries"), "1");
+    assert_eq!(retry.field("delay_ms"), "0");
+    assert_eq!(retry.field("delay_source"), "backoff");
+    assert_eq!(retry.field("error_kind"), "api");
+    assert_eq!(retry.field("status"), "503");
+
+    let success = capture.one_event("twilio2.operation.success");
+    assert_eq!(success.field("attempts"), "2");
+    assert_eq!(success.field("max_retries"), "1");
+    assert_eq!(success.field("status"), "200");
+}
+
+#[cfg(feature = "sync")]
+#[test]
+fn sync_transport_failure_is_redacted_and_structured() {
+    let runtime = runtime();
+    let base_url = runtime.block_on(support::unused_https_base_url());
+    let client =
+        BlockingTwilioClient::try_with_config(test_agent(), support::twilio_config(&base_url))
+            .unwrap();
+    let (capture, _guard) = capture_traces();
+
+    let err = client
+        .account(test_creds())
+        .send_with_options(
+            JsonOperation::new("test.messages.list"),
+            RequestOptions::new().trace_label(SAFE_TRACE_LABEL).retry(
+                RetryPolicy::none()
+                    .with_max_retries(1)
+                    .with_base_delay(Duration::from_millis(0))
+                    .with_jitter(false),
+            ),
+        )
+        .unwrap_err();
+
+    assert!(matches!(err, TwilioError::Transport(_)));
+    let attempts = capture.events_named("twilio2.request.attempt.error");
+    assert_eq!(attempts.len(), 2, "{attempts:#?}");
+    for (i, event) in attempts.iter().enumerate() {
+        event.assert_level("WARN");
+        assert_eq!(event.field("method"), "GET");
+        assert_eq!(event.field("attempt"), &(i + 1).to_string());
+        assert_eq!(event.field("error_kind"), "transport");
+        assert_eq!(event.field("trace_label"), SAFE_TRACE_LABEL);
+    }
+    let retry = capture.one_event("twilio2.request.retry");
+    assert_eq!(retry.field("error_kind"), "transport");
+    assert_eq!(retry.field("trace_label"), SAFE_TRACE_LABEL);
+    let failure = capture.one_event("twilio2.operation.failure");
+    assert_eq!(failure.field("attempts"), "2");
+    assert_eq!(failure.field("error_kind"), "transport");
+    assert_eq!(failure.field("trace_label"), SAFE_TRACE_LABEL);
+    assert_redacted(&capture, &[&base_url, "token", "AC123"]);
 }

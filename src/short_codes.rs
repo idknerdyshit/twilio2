@@ -1,15 +1,26 @@
-use reqwest::{Method, Url};
+#![cfg_attr(feature = "sync", allow(clippy::needless_pass_by_value))]
+
+use http::Method;
 use serde::Deserialize;
 use time::OffsetDateTime;
+#[cfg(feature = "async")]
 use tracing::Instrument as _;
+use url::Url;
 
+#[cfg(feature = "sync")]
+use crate::blocking_client::BlockingTwilioAccount;
+#[cfg(feature = "async")]
 use crate::client::TwilioAccount;
+#[cfg(feature = "sync")]
+use crate::common::BlockingTwilioPaginator;
 use crate::common::{
-    ApiFamily, DEFAULT_PAGE_SIZE, FormParam, LegacyPageResource, PageFuture, RequestSpec,
-    TwilioCreds, TwilioError, TwilioPaginator, decode_json_response, non_empty, parse_rfc2822,
-    push_enum, push_sensitive, push_str, redacted_option, request_span,
-    validate_legacy_next_page_continuation, validate_page_size,
+    ApiFamily, DEFAULT_PAGE_SIZE, FormParam, LegacyPageResource, RequestSpec, TwilioCreds,
+    TwilioError, decode_json_response, non_empty, parse_rfc2822, push_enum, push_sensitive,
+    push_str, redacted_option, request_span, validate_legacy_next_page_continuation,
+    validate_page_size,
 };
+#[cfg(feature = "async")]
+use crate::common::{PageFuture, TwilioPaginator};
 use crate::services::HttpMethod;
 
 #[derive(Clone, Copy)]
@@ -372,10 +383,12 @@ impl WireAccountShortCodePage {
 
 /// Legacy account-level `ShortCodes` collection.
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
 pub struct AccountShortCodesResource<'a> {
     account: TwilioAccount<'a>,
 }
 
+#[cfg(feature = "async")]
 impl<'a> AccountShortCodesResource<'a> {
     pub(crate) fn new(account: TwilioAccount<'a>) -> Self {
         Self { account }
@@ -529,11 +542,13 @@ fn split_account_short_code_page(
 
 /// One legacy account-level `ShortCode` resource.
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
 pub struct AccountShortCodeResource<'a> {
     account: TwilioAccount<'a>,
     sid: &'a str,
 }
 
+#[cfg(feature = "async")]
 impl<'a> AccountShortCodeResource<'a> {
     pub(crate) fn new(account: TwilioAccount<'a>, sid: &'a str) -> Self {
         Self { account, sid }
@@ -587,6 +602,250 @@ impl<'a> AccountShortCodeResource<'a> {
             "POST",
         ))
         .await
+    }
+
+    fn short_code_url(self) -> Result<Url, TwilioError> {
+        self.account.client.rest_endpoint(&[
+            "2010-04-01",
+            "Accounts",
+            self.account.creds.account_sid,
+            "SMS",
+            "ShortCodes",
+            &format!("{}.json", self.sid),
+        ])
+    }
+
+    fn short_code_spec(
+        self,
+        method: Method,
+        operation: &'static str,
+    ) -> Result<RequestSpec, TwilioError> {
+        Ok(RequestSpec::from_url(
+            ApiFamily::Rest,
+            method,
+            self.short_code_url()?,
+            operation,
+        ))
+    }
+
+    fn sensitive_values(self) -> Vec<&'a str> {
+        vec![
+            self.account.creds.account_sid,
+            self.account.creds.auth_token,
+            self.sid,
+        ]
+    }
+}
+
+/// Blocking legacy account-level `ShortCodes` collection.
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingAccountShortCodesResource<'a> {
+    account: BlockingTwilioAccount<'a>,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingAccountShortCodesResource<'a> {
+    pub(crate) fn new(account: BlockingTwilioAccount<'a>) -> Self {
+        Self { account }
+    }
+
+    /// `GET /2010-04-01/Accounts/{AccountSid}/SMS/ShortCodes.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, malformed JSON responses, or invalid pagination
+    /// metadata.
+    pub fn list(
+        self,
+        request: ListAccountShortCodesRequest<'a>,
+    ) -> Result<TwilioAccountShortCodePage, TwilioError> {
+        request_span(
+            &self.account.client.config.rest_base_url,
+            "account_short_codes.list",
+            "GET",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let mut url = self.collection_url()?;
+            request.apply_query(&mut url);
+            let spec = RequestSpec::from_url(
+                ApiFamily::Rest,
+                Method::GET,
+                url.clone(),
+                "account_short_codes.list",
+            );
+            let raw = self.account.send_spec_raw(spec, &sensitive_values)?;
+            self.read_page(&raw.output, &sensitive_values, Some(&url))
+        })
+    }
+
+    /// Fetch a subsequent `ShortCodes` page by Twilio's `next_page_uri`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] when the URI is invalid, leaves the configured
+    /// origin/base path, changes stable filters, or the HTTP request/response
+    /// fails.
+    pub fn list_page_uri(
+        self,
+        next_page_uri: &str,
+    ) -> Result<TwilioAccountShortCodePage, TwilioError> {
+        request_span(
+            &self.account.client.config.rest_base_url,
+            "account_short_codes.list_page_uri",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = vec![
+                self.account.creds.account_sid,
+                self.account.creds.auth_token,
+                next_page_uri,
+            ];
+            let url = self.account.client.legacy_page_url(
+                next_page_uri,
+                self.account.creds.account_sid,
+                LegacyPageResource::ShortCodes,
+            )?;
+            let spec = RequestSpec::from_url(
+                ApiFamily::Rest,
+                Method::GET,
+                url.clone(),
+                "account_short_codes.list_page_uri",
+            );
+            let raw = self.account.send_spec_raw(spec, &sensitive_values)?;
+            self.read_page(&raw.output, &sensitive_values, Some(&url))
+        })
+    }
+
+    fn read_page(
+        self,
+        raw: &crate::RawResponse,
+        sensitive_values: &[&str],
+        current_url: Option<&Url>,
+    ) -> Result<TwilioAccountShortCodePage, TwilioError> {
+        let parsed: WireAccountShortCodePage = decode_json_response(raw, sensitive_values)?;
+        let page = parsed.into_page();
+        if let Some(next_page_uri) = page.next_page_uri.as_ref() {
+            let next_url = self.account.client.legacy_page_url(
+                next_page_uri,
+                self.account.creds.account_sid,
+                LegacyPageResource::ShortCodes,
+            )?;
+            if let Some(current_url) = current_url {
+                validate_legacy_next_page_continuation(
+                    current_url,
+                    &next_url,
+                    LegacyPageResource::ShortCodes,
+                )?;
+            }
+        }
+        Ok(page)
+    }
+
+    /// Lazily list all account-level `ShortCodes` using a default page size of 50.
+    #[must_use]
+    pub fn list_all(
+        self,
+    ) -> BlockingTwilioPaginator<'a, TwilioAccountShortCodePage, TwilioAccountShortCode> {
+        self.list_all_with(ListAccountShortCodesRequest::new())
+    }
+
+    /// Lazily list all account-level `ShortCodes` using supplied first-page filters.
+    #[must_use]
+    pub fn list_all_with(
+        self,
+        mut request: ListAccountShortCodesRequest<'a>,
+    ) -> BlockingTwilioPaginator<'a, TwilioAccountShortCodePage, TwilioAccountShortCode> {
+        if request.page_size.is_none() {
+            request.page_size = Some(DEFAULT_PAGE_SIZE);
+        }
+        BlockingTwilioPaginator::new(
+            move |cursor| {
+                let resource = self;
+                if let Some(cursor) = cursor {
+                    resource.list_page_uri(&cursor)
+                } else {
+                    resource.list(request)
+                }
+            },
+            split_account_short_code_page,
+        )
+    }
+
+    fn collection_url(self) -> Result<Url, TwilioError> {
+        self.account.client.rest_endpoint(&[
+            "2010-04-01",
+            "Accounts",
+            self.account.creds.account_sid,
+            "SMS",
+            "ShortCodes.json",
+        ])
+    }
+}
+
+/// One blocking legacy account-level `ShortCode` resource.
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingAccountShortCodeResource<'a> {
+    account: BlockingTwilioAccount<'a>,
+    sid: &'a str,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingAccountShortCodeResource<'a> {
+    pub(crate) fn new(account: BlockingTwilioAccount<'a>, sid: &'a str) -> Self {
+        Self { account, sid }
+    }
+
+    /// `GET /2010-04-01/Accounts/{AccountSid}/SMS/ShortCodes/{Sid}.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures, non-2xx API responses,
+    /// or malformed JSON responses.
+    pub fn fetch(self) -> Result<TwilioAccountShortCode, TwilioError> {
+        request_span(
+            &self.account.client.config.rest_base_url,
+            "account_short_code.fetch",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = self.sensitive_values();
+            let spec = self.short_code_spec(Method::GET, "account_short_code.fetch")?;
+            let parsed: WireAccountShortCode =
+                self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(parsed.into_short_code())
+        })
+    }
+
+    /// `POST /2010-04-01/Accounts/{AccountSid}/SMS/ShortCodes/{Sid}.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, or malformed JSON responses.
+    pub fn update(
+        self,
+        request: UpdateAccountShortCodeRequest<'a>,
+    ) -> Result<TwilioAccountShortCode, TwilioError> {
+        request_span(
+            &self.account.client.config.rest_base_url,
+            "account_short_code.update",
+            "POST",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds, self.sid);
+            let spec = self
+                .short_code_spec(Method::POST, "account_short_code.update")?
+                .form_params(request.form_params());
+            let parsed: WireAccountShortCode =
+                self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(parsed.into_short_code())
+        })
     }
 
     fn short_code_url(self) -> Result<Url, TwilioError> {

@@ -1,17 +1,21 @@
+#[cfg(feature = "async")]
 use std::error::Error as _;
 use std::fmt;
+#[cfg(feature = "async")]
 use std::future::Future;
+#[cfg(feature = "async")]
 use std::pin::Pin;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use reqwest::header::{
+use http::Method;
+use http::header::{
     AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, HeaderMap, HeaderName,
     HeaderValue,
 };
-use reqwest::{Method, Url};
 use serde::Deserialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::{Iso8601, Rfc2822};
+use url::Url;
 
 #[cfg(feature = "sensitive-diagnostics")]
 use crate::diagnostics::SensitiveDiagnostics;
@@ -191,12 +195,11 @@ impl TwilioConfig {
     }
 }
 
-/// Full construction-time configuration for [`crate::TwilioClient`].
+/// Full construction-time configuration for `twilio2` clients.
 ///
-/// `TwilioClient` consumes this value when it builds the underlying
-/// [`reqwest::Client`]. If a caller provides an already-built HTTP client, only
-/// the base URLs are used; timeout and user-agent settings cannot be applied to
-/// an existing `reqwest::Client`.
+/// Clients consume this value when they build their underlying transport. If a
+/// caller provides an already-built transport, only the base URLs are used;
+/// timeout and user-agent settings cannot be applied to an existing transport.
 #[derive(Clone)]
 pub struct TwilioClientConfig {
     pub base_urls: TwilioConfig,
@@ -313,14 +316,14 @@ impl TwilioClientConfig {
         self
     }
 
-    /// Set the timeout used when this config builds a new [`reqwest::Client`].
+    /// Set the timeout used when this config builds a new transport.
     #[must_use]
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
-    /// Set the user-agent used when this config builds a new [`reqwest::Client`].
+    /// Set the user-agent used when this config builds a new transport.
     #[must_use]
     pub fn user_agent(mut self, user_agent: impl Into<String>) -> Self {
         self.user_agent = user_agent.into();
@@ -1079,10 +1082,13 @@ pub trait Operation {
     ) -> Result<Self::Output, TwilioError>;
 }
 
+#[cfg(feature = "async")]
 pub(crate) type PageFuture<'a, P> = Pin<Box<dyn Future<Output = Result<P, TwilioError>> + 'a>>;
+#[cfg(feature = "async")]
 type FetchPage<'a, P> = Box<dyn FnMut(Option<String>) -> PageFuture<'a, P> + 'a>;
 
 /// Lazy async paginator returned by `*_all` helpers.
+#[cfg(feature = "async")]
 pub struct TwilioPaginator<'a, P, T> {
     fetch: FetchPage<'a, P>,
     split: fn(P) -> (Vec<T>, Option<String>),
@@ -1091,6 +1097,7 @@ pub struct TwilioPaginator<'a, P, T> {
     done: bool,
 }
 
+#[cfg(feature = "async")]
 impl<'a, P, T> TwilioPaginator<'a, P, T> {
     pub(crate) fn new(
         fetch: impl FnMut(Option<String>) -> PageFuture<'a, P> + 'a,
@@ -1177,9 +1184,113 @@ impl<'a, P, T> TwilioPaginator<'a, P, T> {
     }
 }
 
+#[cfg(feature = "async")]
 impl<P, T> fmt::Debug for TwilioPaginator<'_, P, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TwilioPaginator")
+            .field("first", &self.first)
+            .field("done", &self.done)
+            .field(
+                "next_cursor",
+                &if self.next_cursor.is_some() {
+                    Some(REDACTED)
+                } else {
+                    None
+                },
+            )
+            .finish()
+    }
+}
+
+#[cfg(feature = "sync")]
+type BlockingFetchPage<'a, P> = Box<dyn FnMut(Option<String>) -> Result<P, TwilioError> + 'a>;
+
+/// Lazy blocking paginator returned by blocking `*_all` helpers.
+#[cfg(feature = "sync")]
+pub struct BlockingTwilioPaginator<'a, P, T> {
+    fetch: BlockingFetchPage<'a, P>,
+    split: fn(P) -> (Vec<T>, Option<String>),
+    next_cursor: Option<String>,
+    first: bool,
+    done: bool,
+}
+
+#[cfg(feature = "sync")]
+impl<'a, P, T> BlockingTwilioPaginator<'a, P, T> {
+    pub(crate) fn new(
+        fetch: impl FnMut(Option<String>) -> Result<P, TwilioError> + 'a,
+        split: fn(P) -> (Vec<T>, Option<String>),
+    ) -> Self {
+        Self {
+            fetch: Box::new(fetch),
+            split,
+            next_cursor: None,
+            first: true,
+            done: false,
+        }
+    }
+
+    /// Fetch the next page of items, or `None` after exhaustion.
+    pub fn next_page(&mut self) -> Option<Result<Vec<T>, TwilioError>> {
+        if self.done {
+            return None;
+        }
+        let was_first = self.first;
+        let cursor = if was_first {
+            self.first = false;
+            None
+        } else {
+            self.next_cursor.take()
+        };
+        if !was_first && cursor.is_none() {
+            self.done = true;
+            return None;
+        }
+
+        let page = (self.fetch)(cursor);
+        match page {
+            Ok(page) => {
+                let (items, next_cursor) = (self.split)(page);
+                self.next_cursor = next_cursor;
+                if self.next_cursor.is_none() {
+                    self.done = true;
+                }
+                Some(Ok(items))
+            }
+            Err(err) => {
+                self.done = true;
+                Some(Err(err))
+            }
+        }
+    }
+
+    /// Drain all remaining pages into one vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] when fetching any page fails.
+    pub fn collect_all(mut self) -> Result<Vec<T>, TwilioError> {
+        let mut out = Vec::new();
+        while let Some(page) = self.next_page() {
+            out.extend(page?);
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(feature = "sync")]
+impl<P, T> Iterator for BlockingTwilioPaginator<'_, P, T> {
+    type Item = Result<Vec<T>, TwilioError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_page()
+    }
+}
+
+#[cfg(feature = "sync")]
+impl<P, T> fmt::Debug for BlockingTwilioPaginator<'_, P, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BlockingTwilioPaginator")
             .field("first", &self.first)
             .field("done", &self.done)
             .field(
@@ -1265,6 +1376,7 @@ pub(crate) struct LimitedResponseBody {
     pub(crate) complete: bool,
 }
 
+#[cfg(feature = "async")]
 pub(crate) async fn read_limited_response_body(
     mut response: reqwest::Response,
 ) -> Result<LimitedResponseBody, reqwest::Error> {
@@ -1292,6 +1404,36 @@ pub(crate) async fn read_limited_response_body(
     })
 }
 
+#[cfg(feature = "sync")]
+pub(crate) fn read_limited_reader_body<R: std::io::Read>(
+    reader: &mut R,
+) -> Result<LimitedResponseBody, std::io::Error> {
+    let mut body = Vec::new();
+    while body.len() <= MAX_DIAGNOSTIC_BODY_BYTES {
+        let mut chunk = [0_u8; 8192];
+        let read = reader.read(&mut chunk)?;
+        if read == 0 {
+            return Ok(LimitedResponseBody {
+                body,
+                complete: true,
+            });
+        }
+        let remaining = MAX_DIAGNOSTIC_BODY_BYTES + 1 - body.len();
+        if read > remaining {
+            body.extend_from_slice(&chunk[..remaining]);
+            return Ok(LimitedResponseBody {
+                body,
+                complete: false,
+            });
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    Ok(LimitedResponseBody {
+        body,
+        complete: false,
+    })
+}
+
 pub(crate) fn api_error_from_body(
     status: u16,
     body: &[u8],
@@ -1304,6 +1446,7 @@ pub(crate) fn api_error_from_body(
     )
 }
 
+#[cfg(feature = "async")]
 pub(crate) fn api_error_from_body_read_error(
     status: u16,
     error: &reqwest::Error,
@@ -1312,12 +1455,33 @@ pub(crate) fn api_error_from_body_read_error(
     api_error_from_text(status, reqwest_error_message(error), sensitive_values)
 }
 
+#[cfg(feature = "sync")]
+pub(crate) fn api_error_from_read_error_message(
+    status: u16,
+    message: impl Into<String>,
+    sensitive_values: &[&str],
+) -> TwilioError {
+    api_error_from_text(status, message.into(), sensitive_values)
+}
+
+#[cfg(feature = "async")]
 pub(crate) fn transport_error(e: &reqwest::Error, sensitive_values: &[&str]) -> TwilioError {
     let message = sanitize_diagnostic(reqwest_error_message(e), sensitive_values);
     tracing::warn!(error = %message, "twilio transport error");
     TwilioError::Transport(message)
 }
 
+#[cfg(feature = "sync")]
+pub(crate) fn transport_error_from_message(
+    message: impl Into<String>,
+    sensitive_values: &[&str],
+) -> TwilioError {
+    let message = sanitize_diagnostic(message.into(), sensitive_values);
+    tracing::warn!(error = %message, "twilio transport error");
+    TwilioError::Transport(message)
+}
+
+#[cfg(feature = "async")]
 fn reqwest_error_message(e: &reqwest::Error) -> String {
     let mut msg = e.to_string();
     if let Some(status) = e.status() {

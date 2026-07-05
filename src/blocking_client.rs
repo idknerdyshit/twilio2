@@ -1,46 +1,53 @@
+#![allow(clippy::needless_pass_by_value)]
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Instant;
 
-use tracing::Instrument as _;
+use base64::Engine as _;
+use http::HeaderMap;
+use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use url::Url;
 
 use crate::common::{
-    ApiResponse, AttemptTrace, Operation, OperationTrace, ParsedConfig, RawResponse, RequestBody,
-    RequestOptions, RequestSpec, RequestTarget, ResponseMeta, RetryPolicy, TwilioClientConfig,
-    TwilioConfig, TwilioCreds, TwilioError, api_error_from_body, api_error_from_body_read_error,
-    attempt_error, attempt_response, attempt_span, decode_json_response, endpoint_url_from_base,
-    legacy_page_uri_url_from_base, read_limited_response_body, transport_error,
-    v1_page_url_from_base,
+    ApiFamily, ApiResponse, AttemptTrace, Operation, OperationTrace, ParsedConfig, RawResponse,
+    RequestBody, RequestOptions, RequestSpec, RequestTarget, ResponseMeta, RetryPolicy,
+    TwilioClientConfig, TwilioConfig, TwilioCreds, TwilioError, api_error_from_body,
+    api_error_from_read_error_message, attempt_error, attempt_response, attempt_span,
+    decode_json_response, endpoint_url_from_base, legacy_page_uri_url_from_base,
+    read_limited_reader_body, transport_error_from_message, v1_page_url_from_base,
 };
-use crate::deactivations::DeactivationsResource;
+use crate::deactivations::BlockingDeactivationsResource;
 #[cfg(feature = "sensitive-diagnostics")]
 use crate::diagnostics::{
     SensitiveDiagnosticEvent, SensitiveDiagnostics, SensitiveRequestSnapshot,
-    SensitiveResponseSnapshot, SensitiveTransportErrorSnapshot, SensitiveTransportErrorStage,
+    SensitiveRequestSnapshotParts, SensitiveResponseSnapshot, SensitiveTransportErrorSnapshot,
+    SensitiveTransportErrorStage,
 };
-use crate::messages::{MessageResource, MessagesResource};
-use crate::services::{ServiceResource, ServicesResource};
-use crate::short_codes::{AccountShortCodeResource, AccountShortCodesResource};
-use crate::tollfree_verifications::{TollfreeVerificationResource, TollfreeVerificationsResource};
+use crate::messages::{BlockingMessageResource, BlockingMessagesResource};
+use crate::services::{BlockingServiceResource, BlockingServicesResource};
+use crate::short_codes::{BlockingAccountShortCodeResource, BlockingAccountShortCodesResource};
+use crate::tollfree_verifications::{
+    BlockingTollfreeVerificationResource, BlockingTollfreeVerificationsResource,
+};
 
-/// A thin Twilio API client over an injected [`reqwest::Client`].
+/// A thin blocking Twilio API client over an injected [`ureq::Agent`].
 ///
 /// The client stores HTTP/base URL configuration only. Account credentials are
 /// supplied to [`Self::account`] and borrowed by the account-scoped API handle.
 #[derive(Clone)]
-pub struct TwilioClient {
-    pub(crate) http: reqwest::Client,
+pub struct BlockingTwilioClient {
+    pub(crate) agent: ureq::Agent,
     pub(crate) config: ParsedConfig,
     #[cfg(feature = "sensitive-diagnostics")]
     pub(crate) sensitive_diagnostics: Option<SensitiveDiagnostics>,
 }
 
-pub(crate) struct RawAttemptResponse {
+pub(crate) struct BlockingRawAttemptResponse {
     response: ApiResponse<RawResponse>,
     attempts: u32,
 }
 
-pub(crate) struct RawAttemptError {
+pub(crate) struct BlockingRawAttemptError {
     error: TwilioError,
     attempts: u32,
 }
@@ -52,6 +59,11 @@ struct RawAttemptContext<'a, 's> {
     sensitive_values: &'a [&'s str],
     attempt: u32,
     retry: RetryPolicy,
+}
+
+enum BuiltRequest {
+    Empty(http::Request<()>),
+    Body(http::Request<Vec<u8>>),
 }
 
 struct ApiErrorRead {
@@ -76,7 +88,7 @@ fn raw_api_response(raw: RawResponse) -> ApiResponse<RawResponse> {
 
 #[cfg(feature = "sensitive-diagnostics")]
 struct SensitiveBuildError<'a> {
-    client: &'a TwilioClient,
+    client: &'a BlockingTwilioClient,
     options: &'a RequestOptions,
     operation: &'static str,
     method: http::Method,
@@ -96,7 +108,7 @@ struct SensitiveAttempt<'a> {
 #[cfg(feature = "sensitive-diagnostics")]
 impl<'a> SensitiveAttempt<'a> {
     fn diagnostics_for(
-        client: &'a TwilioClient,
+        client: &'a BlockingTwilioClient,
         options: &'a RequestOptions,
     ) -> Option<&'a SensitiveDiagnostics> {
         options
@@ -106,22 +118,39 @@ impl<'a> SensitiveAttempt<'a> {
     }
 
     fn new(
-        client: &'a TwilioClient,
+        client: &'a BlockingTwilioClient,
         options: &'a RequestOptions,
-        request: &reqwest::Request,
+        request: &BuiltRequest,
         operation: &'static str,
         attempt: u32,
         max_retries: u32,
     ) -> Self {
         let diagnostics = Self::diagnostics_for(client, options);
-        let snapshot = diagnostics.map(|_| {
-            SensitiveRequestSnapshot::from_request(
-                request,
-                operation,
-                attempt,
-                max_retries,
-                options.trace_label.as_deref(),
-            )
+        let snapshot = diagnostics.map(|_| match request {
+            BuiltRequest::Empty(request) => {
+                SensitiveRequestSnapshot::from_parts(SensitiveRequestSnapshotParts {
+                    method: request.method().clone(),
+                    url: request.uri().to_string(),
+                    operation,
+                    attempt,
+                    max_retries,
+                    trace_label: options.trace_label.clone(),
+                    headers: request.headers().clone(),
+                    body: None,
+                })
+            }
+            BuiltRequest::Body(request) => {
+                SensitiveRequestSnapshot::from_parts(SensitiveRequestSnapshotParts {
+                    method: request.method().clone(),
+                    url: request.uri().to_string(),
+                    operation,
+                    attempt,
+                    max_retries,
+                    trace_label: options.trace_label.clone(),
+                    headers: request.headers().clone(),
+                    body: Some(bytes::Bytes::copy_from_slice(request.body())),
+                })
+            }
         });
         Self {
             diagnostics,
@@ -140,7 +169,7 @@ impl<'a> SensitiveAttempt<'a> {
             attempt: error.attempt,
             max_retries: error.max_retries,
             trace_label: error.options.trace_label.clone(),
-            headers: http::HeaderMap::default(),
+            headers: HeaderMap::default(),
             body: None,
         };
         diagnostics.record(SensitiveDiagnosticEvent::TransportError(
@@ -183,48 +212,40 @@ impl<'a> SensitiveAttempt<'a> {
     }
 }
 
-impl TwilioClient {
-    /// Build a client from construction-time config.
+impl BlockingTwilioClient {
+    /// Build a blocking client from construction-time config.
     ///
     /// # Errors
     ///
     /// Returns [`TwilioError::InvalidBaseUrl`] when either configured base URL
-    /// is invalid, or [`TwilioError::Transport`] when `reqwest::Client`
-    /// construction fails.
+    /// is invalid, or [`TwilioError::Transport`] when `ureq::Agent`
+    /// construction panics.
     pub fn from_config(config: TwilioClientConfig) -> Result<Self, TwilioError> {
-        let http = catch_unwind(AssertUnwindSafe(|| {
-            reqwest::Client::builder()
-                .timeout(config.timeout)
-                .user_agent(config.user_agent.clone())
-                .build()
-        }))
-        .map_err(|_| {
+        let agent = catch_unwind(AssertUnwindSafe(|| default_agent(&config))).map_err(|_| {
             TwilioError::Transport(
-                "reqwest client construction panicked; check TLS provider configuration".to_owned(),
+                "ureq agent construction panicked; check TLS provider configuration".to_owned(),
             )
-        })?
-        .map_err(|e| transport_error(&e, &[]))?;
-        Self::from_config_and_http_client(config, http)
+        })?;
+        Self::from_config_and_agent(config, agent)
     }
 
-    /// Build a client from construction-time config and a caller-provided HTTP
-    /// client.
+    /// Build a blocking client from construction-time config and a caller-provided agent.
     ///
-    /// The supplied HTTP client is used as-is. Timeout and user-agent values in
-    /// `config` cannot be applied to an already-built `reqwest::Client`; only
-    /// the base URL configuration is retained.
+    /// The supplied agent is used as-is. Timeout and user-agent values in
+    /// `config` cannot be applied to an already-built `ureq::Agent`; only the
+    /// base URL configuration is retained.
     ///
     /// # Errors
     ///
     /// Returns [`TwilioError::InvalidBaseUrl`] when either base URL is invalid.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn from_config_and_http_client(
+    pub fn from_config_and_agent(
         config: TwilioClientConfig,
-        http: reqwest::Client,
+        agent: ureq::Agent,
     ) -> Result<Self, TwilioError> {
         #[cfg(feature = "sensitive-diagnostics")]
         let sensitive_diagnostics = config.sensitive_diagnostics.clone();
-        let client = Self::try_with_config(http, config.base_urls)?;
+        let client = Self::try_with_config(agent, config.base_urls)?;
         #[cfg(feature = "sensitive-diagnostics")]
         {
             let mut client = client;
@@ -237,18 +258,18 @@ impl TwilioClient {
         }
     }
 
-    /// Build with default Twilio base URLs from a caller-provided HTTP client.
+    /// Build with default Twilio base URLs from a caller-provided agent.
     #[must_use]
-    pub fn from_http_client(http: reqwest::Client) -> Self {
-        Self::new(http)
+    pub fn from_agent(agent: ureq::Agent) -> Self {
+        Self::new(agent)
     }
 
-    /// Build a client from environment variables.
+    /// Build a blocking client from environment variables.
     ///
     /// # Errors
     ///
-    /// Returns [`TwilioError`] when environment values or HTTP client
-    /// construction fail.
+    /// Returns [`TwilioError`] when environment values or agent construction
+    /// fail.
     pub fn from_env() -> Result<Self, TwilioError> {
         Self::from_config(TwilioClientConfig::from_env()?)
     }
@@ -259,8 +280,9 @@ impl TwilioClient {
     ///
     /// Panics only if the library's built-in default base URLs are invalid.
     #[must_use]
-    pub fn new(http: reqwest::Client) -> Self {
-        Self::try_with_config(http, TwilioConfig::default()).expect("invalid default Twilio config")
+    pub fn new(agent: ureq::Agent) -> Self {
+        Self::try_with_config(agent, TwilioConfig::default())
+            .expect("invalid default Twilio config")
     }
 
     /// Build with explicit base URL configuration.
@@ -271,12 +293,9 @@ impl TwilioClient {
     /// not HTTPS, lacks a host, includes embedded credentials, or includes a
     /// query string or fragment.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn try_with_config(
-        http: reqwest::Client,
-        config: TwilioConfig,
-    ) -> Result<Self, TwilioError> {
+    pub fn try_with_config(agent: ureq::Agent, config: TwilioConfig) -> Result<Self, TwilioError> {
         Ok(Self {
-            http,
+            agent,
             config: ParsedConfig::parse(&config)?,
             #[cfg(feature = "sensitive-diagnostics")]
             sensitive_diagnostics: None,
@@ -284,10 +303,10 @@ impl TwilioClient {
     }
 
     /// Create an account-scoped handle. Credentials are borrowed and are not
-    /// retained by [`TwilioClient`].
+    /// retained by [`BlockingTwilioClient`].
     #[must_use]
-    pub fn account<'a>(&'a self, creds: TwilioCreds<'a>) -> TwilioAccount<'a> {
-        TwilioAccount {
+    pub fn account<'a>(&'a self, creds: TwilioCreds<'a>) -> BlockingTwilioAccount<'a> {
+        BlockingTwilioAccount {
             client: self,
             creds,
         }
@@ -335,10 +354,8 @@ impl TwilioClient {
                     options
                         .base_url_for(spec.family)?
                         .unwrap_or_else(|| match spec.family {
-                            crate::common::ApiFamily::Rest => self.config.rest_base_url.clone(),
-                            crate::common::ApiFamily::Messaging => {
-                                self.config.messaging_base_url.clone()
-                            }
+                            ApiFamily::Rest => self.config.rest_base_url.clone(),
+                            ApiFamily::Messaging => self.config.messaging_base_url.clone(),
                         });
                 let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
                 endpoint_url_from_base(&base, &refs)?
@@ -360,23 +377,23 @@ impl TwilioClient {
         Ok(url)
     }
 
-    pub(crate) async fn send_raw_spec(
+    pub(crate) fn send_raw_spec(
         &self,
         creds: TwilioCreds<'_>,
         spec: RequestSpec,
         options: RequestOptions,
         sensitive_values: &[&str],
-    ) -> Result<RawAttemptResponse, RawAttemptError> {
+    ) -> Result<BlockingRawAttemptResponse, BlockingRawAttemptError> {
         let retry = options.retry_or_default();
         options
             .validate()
-            .map_err(|error| RawAttemptError { error, attempts: 0 })?;
+            .map_err(|error| BlockingRawAttemptError { error, attempts: 0 })?;
         if spec.is_continuation()
             && (options.rest_base_url.is_some()
                 || options.messaging_base_url.is_some()
                 || !options.query.is_empty())
         {
-            return Err(RawAttemptError {
+            return Err(BlockingRawAttemptError {
                 error: TwilioError::InvalidRequest(
                     "pagination continuation requests do not accept base URL or extra query overrides"
                         .to_owned(),
@@ -385,7 +402,7 @@ impl TwilioClient {
             });
         }
         if retry.max_retries > 0 && !spec.is_safe_method() {
-            return Err(RawAttemptError {
+            return Err(BlockingRawAttemptError {
                 error: TwilioError::InvalidRequest(
                     "automatic retries are only supported for safe HTTP methods".to_owned(),
                 ),
@@ -394,27 +411,25 @@ impl TwilioClient {
         }
         let url = self
             .url_for_spec(&spec, &options)
-            .map_err(|error| RawAttemptError { error, attempts: 0 })?;
+            .map_err(|error| BlockingRawAttemptError { error, attempts: 0 })?;
 
         let mut retries_done = 0;
         loop {
             let attempt = retries_done + 1;
-            let result = self
-                .send_raw_once(
-                    creds,
-                    RawAttemptContext {
-                        spec: &spec,
-                        url: &url,
-                        options: &options,
-                        sensitive_values,
-                        attempt,
-                        retry,
-                    },
-                )
-                .await;
+            let result = self.send_raw_once(
+                creds,
+                RawAttemptContext {
+                    spec: &spec,
+                    url: &url,
+                    options: &options,
+                    sensitive_values,
+                    attempt,
+                    retry,
+                },
+            );
             match result {
                 Ok(response) => {
-                    return Ok(RawAttemptResponse {
+                    return Ok(BlockingRawAttemptResponse {
                         response,
                         attempts: attempt,
                     });
@@ -428,11 +443,11 @@ impl TwilioClient {
                         sensitive_values,
                     );
                     trace.retry(spec.method.as_str(), attempt, attempt + 1, delay, &err);
-                    tokio::time::sleep(delay).await;
+                    std::thread::sleep(delay);
                     retries_done += 1;
                 }
                 Err(error) => {
-                    return Err(RawAttemptError {
+                    return Err(BlockingRawAttemptError {
                         error,
                         attempts: attempt,
                     });
@@ -442,67 +457,105 @@ impl TwilioClient {
     }
 
     fn build_raw_request(
-        &self,
         creds: TwilioCreds<'_>,
         spec: &RequestSpec,
         url: &Url,
         options: &RequestOptions,
-    ) -> Result<reqwest::Request, reqwest::Error> {
-        let mut request = self
-            .http
-            .request(spec.method.clone(), url.clone())
-            .basic_auth(creds.account_sid, Some(creds.auth_token));
-        if let Some(timeout) = options.timeout {
-            request = request.timeout(timeout);
-        }
+    ) -> Result<BuiltRequest, http::Error> {
+        let mut builder = http::Request::builder()
+            .method(spec.method.clone())
+            .uri(url.as_str())
+            .header(AUTHORIZATION, basic_auth_value(creds));
         for (key, value) in &options.headers {
-            request = request.header(key, value);
+            builder = builder.header(key.as_str(), value.as_str());
         }
+
         match &spec.body {
-            RequestBody::Empty => {}
+            RequestBody::Empty => builder.body(()).map(BuiltRequest::Empty),
             RequestBody::Form(params) => {
-                let form: Vec<(&str, &str)> = params
-                    .iter()
-                    .map(|(key, value)| (key.as_str(), value.as_str()))
-                    .collect();
-                request = request.form(&form);
+                builder = builder.header(CONTENT_TYPE, "application/x-www-form-urlencoded");
+                let mut encoded = url::form_urlencoded::Serializer::new(String::new());
+                for (key, value) in params {
+                    encoded.append_pair(key, value);
+                }
+                let body = encoded.finish();
+                builder.body(body.into_bytes()).map(BuiltRequest::Body)
             }
         }
-        request.build()
     }
 
-    async fn read_api_error_response(
-        response: reqwest::Response,
+    fn run_built_request(
+        &self,
+        request: BuiltRequest,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<http::Response<ureq::Body>, ureq::Error> {
+        match request {
+            BuiltRequest::Empty(request) => {
+                let request = self.configure_built_request(request, timeout);
+                self.agent.run(request)
+            }
+            BuiltRequest::Body(request) => {
+                let request = self.configure_built_request(request, timeout);
+                self.agent.run(request)
+            }
+        }
+    }
+
+    fn configure_built_request<S: ureq::AsSendBody>(
+        &self,
+        request: http::Request<S>,
+        timeout: Option<std::time::Duration>,
+    ) -> http::Request<S> {
+        let builder = self
+            .agent
+            .configure_request(request)
+            .http_status_as_error(false)
+            .max_redirects(0);
+        if let Some(timeout) = timeout {
+            builder.timeout_global(Some(timeout)).build()
+        } else {
+            builder.build()
+        }
+    }
+
+    fn read_api_error_response(
+        mut response: http::Response<ureq::Body>,
         status: u16,
-        headers: reqwest::header::HeaderMap,
+        headers: HeaderMap,
         sensitive_values: &[&str],
         capture_sensitive_response: bool,
     ) -> ApiErrorRead {
         if capture_sensitive_response {
-            return match response.bytes().await {
-                Ok(body) => {
-                    let body = body.to_vec();
-                    ApiErrorRead {
-                        error: api_error_from_body(status, &body, sensitive_values),
-                        raw_response: Some(RawResponse::new(status, headers, body)),
-                        transport_error: None,
-                    }
-                }
+            return match response.body_mut().read_to_vec() {
+                Ok(body) => ApiErrorRead {
+                    error: api_error_from_body(status, &body, sensitive_values),
+                    raw_response: Some(RawResponse::new(status, headers, body)),
+                    transport_error: None,
+                },
                 Err(error) => ApiErrorRead {
-                    error: api_error_from_body_read_error(status, &error, sensitive_values),
+                    error: api_error_from_read_error_message(
+                        status,
+                        error_message(&error),
+                        sensitive_values,
+                    ),
                     raw_response: None,
-                    transport_error: Some(error.to_string()),
+                    transport_error: Some(error_message(&error)),
                 },
             };
         }
 
-        let limited = match read_limited_response_body(response).await {
+        let mut reader = response.body_mut().as_reader();
+        let limited = match read_limited_reader_body(&mut reader) {
             Ok(limited) => limited,
             Err(error) => {
                 return ApiErrorRead {
-                    error: api_error_from_body_read_error(status, &error, sensitive_values),
+                    error: api_error_from_read_error_message(
+                        status,
+                        error_message(&error),
+                        sensitive_values,
+                    ),
                     raw_response: None,
-                    transport_error: Some(error.to_string()),
+                    transport_error: Some(error_message(&error)),
                 };
             }
         };
@@ -516,23 +569,22 @@ impl TwilioClient {
         }
     }
 
-    async fn read_response_body(
-        response: reqwest::Response,
+    fn read_response_body(
+        mut response: http::Response<ureq::Body>,
         sensitive_values: &[&str],
     ) -> Result<Vec<u8>, BodyReadError> {
         response
-            .bytes()
-            .await
-            .map(|body| body.to_vec())
+            .body_mut()
+            .read_to_vec()
             .map_err(|e| BodyReadError {
-                raw_error: e.to_string(),
-                error: transport_error(&e, sensitive_values),
+                raw_error: error_message(&e),
+                error: transport_error_from_message(error_message(&e), sensitive_values),
             })
     }
 
     fn raw_request_build_error(
         &self,
-        error: &reqwest::Error,
+        error: &http::Error,
         context: &RawAttemptContext<'_, '_>,
         attempt_trace: &AttemptTrace<'_>,
         span: &tracing::Span,
@@ -549,14 +601,14 @@ impl TwilioClient {
             url: context.url,
             attempt: context.attempt,
             max_retries: context.retry.max_retries,
-            error: error.to_string(),
+            error: error_message(error),
         });
-        let error = transport_error(error, context.sensitive_values);
+        let error = transport_error_from_message(error_message(error), context.sensitive_values);
         attempt_error(span, attempt_trace, start.elapsed(), &error);
         error
     }
 
-    async fn send_raw_once(
+    fn send_raw_once(
         &self,
         creds: TwilioCreds<'_>,
         context: RawAttemptContext<'_, '_>,
@@ -571,9 +623,10 @@ impl TwilioClient {
             context.sensitive_values,
         );
         let span = attempt_span(&attempt_trace);
+        let _entered = span.enter();
         let start = Instant::now();
         let request =
-            match self.build_raw_request(creds, context.spec, context.url, context.options) {
+            match Self::build_raw_request(creds, context.spec, context.url, context.options) {
                 Ok(request) => request,
                 Err(e) => {
                     return Err(self.raw_request_build_error(
@@ -597,14 +650,15 @@ impl TwilioClient {
         #[cfg(feature = "sensitive-diagnostics")]
         sensitive.request();
 
-        let response = match self.http.execute(request).instrument(span.clone()).await {
+        let response = match self.run_built_request(request, context.options.timeout) {
             Ok(response) => response,
             Err(e) => {
                 #[cfg(feature = "sensitive-diagnostics")]
-                let raw_error = e.to_string();
+                let raw_error = error_message(&e);
                 #[cfg(feature = "sensitive-diagnostics")]
                 sensitive.transport_error(SensitiveTransportErrorStage::Send, raw_error);
-                let error = transport_error(&e, context.sensitive_values);
+                let error =
+                    transport_error_from_message(error_message(&e), context.sensitive_values);
                 attempt_error(&span, &attempt_trace, start.elapsed(), &error);
                 return Err(error);
             }
@@ -622,8 +676,7 @@ impl TwilioClient {
                 headers,
                 context.sensitive_values,
                 capture_sensitive_response,
-            )
-            .await;
+            );
             #[cfg(not(feature = "sensitive-diagnostics"))]
             let _ = (&api_error.raw_response, &api_error.transport_error);
             #[cfg(feature = "sensitive-diagnostics")]
@@ -637,7 +690,7 @@ impl TwilioClient {
             attempt_response(&span, &attempt_trace, status, start.elapsed());
             return Err(api_error.error);
         }
-        let body = match Self::read_response_body(response, context.sensitive_values).await {
+        let body = match Self::read_response_body(response, context.sensitive_values) {
             Ok(body) => body,
             Err(error) => {
                 #[cfg(not(feature = "sensitive-diagnostics"))]
@@ -656,66 +709,66 @@ impl TwilioClient {
     }
 }
 
-/// Account-scoped Twilio API handle.
+/// Account-scoped blocking Twilio API handle.
 #[derive(Clone, Copy)]
-pub struct TwilioAccount<'a> {
-    pub(crate) client: &'a TwilioClient,
+pub struct BlockingTwilioAccount<'a> {
+    pub(crate) client: &'a BlockingTwilioClient,
     pub(crate) creds: TwilioCreds<'a>,
 }
 
-impl<'a> TwilioAccount<'a> {
+impl<'a> BlockingTwilioAccount<'a> {
     /// Account-level Messages collection.
     #[must_use]
-    pub fn messages(self) -> MessagesResource<'a> {
-        MessagesResource::new(self)
+    pub fn messages(self) -> BlockingMessagesResource<'a> {
+        BlockingMessagesResource::new(self)
     }
 
     /// One Message resource and its subresources.
     #[must_use]
-    pub fn message(self, sid: &'a str) -> MessageResource<'a> {
-        MessageResource::new(self, sid)
+    pub fn message(self, sid: &'a str) -> BlockingMessageResource<'a> {
+        BlockingMessageResource::new(self, sid)
     }
 
     /// Messaging v1 Deactivations collection.
     #[must_use]
-    pub fn deactivations(self) -> DeactivationsResource<'a> {
-        DeactivationsResource::new(self)
+    pub fn deactivations(self) -> BlockingDeactivationsResource<'a> {
+        BlockingDeactivationsResource::new(self)
     }
 
     /// Legacy account-level `ShortCodes` collection.
     #[must_use]
-    pub fn short_codes(self) -> AccountShortCodesResource<'a> {
-        AccountShortCodesResource::new(self)
+    pub fn short_codes(self) -> BlockingAccountShortCodesResource<'a> {
+        BlockingAccountShortCodesResource::new(self)
     }
 
     /// One legacy account-level `ShortCode` resource.
     #[must_use]
-    pub fn short_code(self, sid: &'a str) -> AccountShortCodeResource<'a> {
-        AccountShortCodeResource::new(self, sid)
+    pub fn short_code(self, sid: &'a str) -> BlockingAccountShortCodeResource<'a> {
+        BlockingAccountShortCodeResource::new(self, sid)
     }
 
     /// Messaging Services collection.
     #[must_use]
-    pub fn services(self) -> ServicesResource<'a> {
-        ServicesResource::new(self)
+    pub fn services(self) -> BlockingServicesResource<'a> {
+        BlockingServicesResource::new(self)
     }
 
     /// One Messaging Service resource and its subresources.
     #[must_use]
-    pub fn service(self, sid: &'a str) -> ServiceResource<'a> {
-        ServiceResource::new(self, sid)
+    pub fn service(self, sid: &'a str) -> BlockingServiceResource<'a> {
+        BlockingServiceResource::new(self, sid)
     }
 
     /// Messaging v1 Toll-free Verifications collection.
     #[must_use]
-    pub fn tollfree_verifications(self) -> TollfreeVerificationsResource<'a> {
-        TollfreeVerificationsResource::new(self)
+    pub fn tollfree_verifications(self) -> BlockingTollfreeVerificationsResource<'a> {
+        BlockingTollfreeVerificationsResource::new(self)
     }
 
     /// One Messaging v1 Toll-free Verification resource.
     #[must_use]
-    pub fn tollfree_verification(self, sid: &'a str) -> TollfreeVerificationResource<'a> {
-        TollfreeVerificationResource::new(self, sid)
+    pub fn tollfree_verification(self, sid: &'a str) -> BlockingTollfreeVerificationResource<'a> {
+        BlockingTollfreeVerificationResource::new(self, sid)
     }
 
     /// Execute a custom Twilio operation and decode its response.
@@ -724,10 +777,8 @@ impl<'a> TwilioAccount<'a> {
     ///
     /// Returns [`TwilioError`] for invalid operations, transport failures,
     /// non-2xx API responses, or operation decode failures.
-    pub async fn send<O: Operation>(self, operation: O) -> Result<O::Output, TwilioError> {
-        self.send_with_meta(operation)
-            .await
-            .map(|(output, _meta)| output)
+    pub fn send<O: Operation>(self, operation: O) -> Result<O::Output, TwilioError> {
+        self.send_with_meta(operation).map(|(output, _meta)| output)
     }
 
     /// Execute a custom operation with request-scoped transport options.
@@ -736,29 +787,26 @@ impl<'a> TwilioAccount<'a> {
     ///
     /// Returns [`TwilioError`] for invalid operations/options, transport
     /// failures, non-2xx API responses, or operation decode failures.
-    pub async fn send_with_options<O: Operation>(
+    pub fn send_with_options<O: Operation>(
         self,
         operation: O,
         options: RequestOptions,
     ) -> Result<O::Output, TwilioError> {
         self.send_with_meta_with_options(operation, options)
-            .await
             .map(|(output, _meta)| output)
     }
 
-    /// Execute a custom operation and return decoded output plus response
-    /// metadata.
+    /// Execute a custom operation and return decoded output plus response metadata.
     ///
     /// # Errors
     ///
     /// Returns [`TwilioError`] for invalid operations, transport failures,
     /// non-2xx API responses, or operation decode failures.
-    pub async fn send_with_meta<O: Operation>(
+    pub fn send_with_meta<O: Operation>(
         self,
         operation: O,
     ) -> Result<(O::Output, ResponseMeta), TwilioError> {
         self.send_with_meta_with_options(operation, RequestOptions::new())
-            .await
     }
 
     /// Execute a custom operation with request options and return decoded output
@@ -768,14 +816,12 @@ impl<'a> TwilioAccount<'a> {
     ///
     /// Returns [`TwilioError`] for invalid operations/options, transport
     /// failures, non-2xx API responses, or operation decode failures.
-    pub async fn send_with_meta_with_options<O: Operation>(
+    pub fn send_with_meta_with_options<O: Operation>(
         self,
         operation: O,
         options: RequestOptions,
     ) -> Result<(O::Output, ResponseMeta), TwilioError> {
-        let response = self
-            .send_with_response_with_options(operation, options)
-            .await?;
+        let response = self.send_with_response_with_options(operation, options)?;
         Ok((response.output, response.meta))
     }
 
@@ -785,12 +831,11 @@ impl<'a> TwilioAccount<'a> {
     ///
     /// Returns [`TwilioError`] for invalid operations, transport failures,
     /// non-2xx API responses, or operation decode failures.
-    pub async fn send_with_response<O: Operation>(
+    pub fn send_with_response<O: Operation>(
         self,
         operation: O,
     ) -> Result<ApiResponse<O::Output>, TwilioError> {
         self.send_with_response_with_options(operation, RequestOptions::new())
-            .await
     }
 
     /// Execute a custom operation with request options and return decoded output
@@ -800,7 +845,7 @@ impl<'a> TwilioAccount<'a> {
     ///
     /// Returns [`TwilioError`] for invalid operations/options, transport
     /// failures, non-2xx API responses, or operation decode failures.
-    pub async fn send_with_response_with_options<O: Operation>(
+    pub fn send_with_response_with_options<O: Operation>(
         self,
         operation: O,
         options: RequestOptions,
@@ -836,7 +881,6 @@ impl<'a> TwilioAccount<'a> {
         let raw = match self
             .client
             .send_raw_spec(self.creds, spec, options, &sensitive_refs)
-            .await
         {
             Ok(raw) => raw,
             Err(raw_error) => {
@@ -865,18 +909,19 @@ impl<'a> TwilioAccount<'a> {
         })
     }
 
-    pub(crate) async fn send_spec_json<T: serde::de::DeserializeOwned>(
+    pub(crate) fn send_spec_json<T: serde::de::DeserializeOwned>(
         self,
         spec: RequestSpec,
         sensitive_values: &[&str],
     ) -> Result<T, TwilioError> {
         let method = spec.method.as_str().to_owned();
         let trace = OperationTrace::new(spec.operation, 0, None, sensitive_values);
-        let raw = match self
-            .client
-            .send_raw_spec(self.creds, spec, RequestOptions::new(), sensitive_values)
-            .await
-        {
+        let raw = match self.client.send_raw_spec(
+            self.creds,
+            spec,
+            RequestOptions::new(),
+            sensitive_values,
+        ) {
             Ok(raw) => raw,
             Err(raw_error) => {
                 trace.failure(
@@ -900,7 +945,7 @@ impl<'a> TwilioAccount<'a> {
         Ok(decoded)
     }
 
-    pub(crate) async fn send_spec_empty(
+    pub(crate) fn send_spec_empty(
         self,
         spec: RequestSpec,
         sensitive_values: &[&str],
@@ -910,7 +955,6 @@ impl<'a> TwilioAccount<'a> {
         match self
             .client
             .send_raw_spec(self.creds, spec, RequestOptions::new(), sensitive_values)
-            .await
         {
             Ok(raw) => {
                 trace.success(&method, raw.attempts, raw.response.raw.status);
@@ -928,7 +972,7 @@ impl<'a> TwilioAccount<'a> {
         }
     }
 
-    pub(crate) async fn send_spec_raw(
+    pub(crate) fn send_spec_raw(
         self,
         spec: RequestSpec,
         sensitive_values: &[&str],
@@ -938,7 +982,6 @@ impl<'a> TwilioAccount<'a> {
         match self
             .client
             .send_raw_spec(self.creds, spec, RequestOptions::new(), sensitive_values)
-            .await
         {
             Ok(raw) => {
                 trace.success(&method, raw.attempts, raw.response.raw.status);
@@ -955,4 +998,40 @@ impl<'a> TwilioAccount<'a> {
             }
         }
     }
+}
+
+fn default_agent(config: &TwilioClientConfig) -> ureq::Agent {
+    let builder = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .timeout_global(Some(config.timeout))
+        .user_agent(config.user_agent.clone());
+    #[cfg(all(
+        feature = "native-tls",
+        not(feature = "rustls"),
+        not(feature = "rustls-no-provider")
+    ))]
+    let builder = builder.tls_config(
+        ureq::tls::TlsConfig::builder()
+            .provider(ureq::tls::TlsProvider::NativeTls)
+            .build(),
+    );
+    ureq::Agent::new_with_config(builder.build())
+}
+
+fn basic_auth_value(creds: TwilioCreds<'_>) -> String {
+    let token = format!("{}:{}", creds.account_sid, creds.auth_token);
+    let encoded = base64::engine::general_purpose::STANDARD.encode(token);
+    format!("Basic {encoded}")
+}
+
+fn error_message(e: &impl std::error::Error) -> String {
+    let mut msg = e.to_string();
+    if let Some(source) = e.source() {
+        let source = source.to_string();
+        if !source.is_empty() && !msg.contains(&source) {
+            msg = format!("{msg}: {source}");
+        }
+    }
+    msg
 }

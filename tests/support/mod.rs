@@ -8,7 +8,11 @@ use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
-use twilio2::{TwilioClient, TwilioConfig, TwilioCreds};
+#[cfg(feature = "sync")]
+use twilio2::BlockingTwilioClient;
+#[cfg(feature = "async")]
+use twilio2::TwilioClient;
+use twilio2::{TwilioConfig, TwilioCreds};
 
 #[derive(Clone)]
 pub struct MockResponse {
@@ -40,6 +44,20 @@ impl MockResponse {
         }
     }
 
+    pub fn created_json(body: impl Into<String>) -> Self {
+        Self::status_json(201, body)
+    }
+
+    pub fn no_content() -> Self {
+        Self {
+            status: 204,
+            body: Vec::new(),
+            content_type: "application/json".to_owned(),
+            content_length: None,
+            headers: Vec::new(),
+        }
+    }
+
     pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push((name.into(), value.into()));
         self
@@ -52,6 +70,15 @@ pub struct RecordedRequest {
     pub path: String,
     pub headers: Vec<(String, String)>,
     pub body: String,
+}
+
+impl RecordedRequest {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
 }
 
 pub struct HttpsMockServer {
@@ -111,6 +138,7 @@ impl HttpsMockServer {
     }
 }
 
+#[cfg(feature = "async")]
 pub fn test_http_client() -> reqwest::Client {
     install_test_crypto_provider();
 
@@ -121,6 +149,18 @@ pub fn test_http_client() -> reqwest::Client {
         .unwrap()
 }
 
+#[cfg(feature = "sync")]
+pub fn test_agent() -> ureq::Agent {
+    install_test_crypto_provider();
+
+    let builder = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .proxy(None)
+        .tls_config(test_tls_config());
+    ureq::Agent::new_with_config(builder.build())
+}
+
 pub fn test_creds() -> TwilioCreds<'static> {
     TwilioCreds {
         account_sid: "AC123",
@@ -128,8 +168,14 @@ pub fn test_creds() -> TwilioCreds<'static> {
     }
 }
 
+#[cfg(feature = "async")]
 pub fn client_for(server: &HttpsMockServer) -> TwilioClient {
     TwilioClient::try_with_config(test_http_client(), twilio_config(&server.base_url)).unwrap()
+}
+
+#[cfg(feature = "sync")]
+pub fn blocking_client_for(server: &HttpsMockServer) -> BlockingTwilioClient {
+    BlockingTwilioClient::try_with_config(test_agent(), twilio_config(&server.base_url)).unwrap()
 }
 
 pub fn twilio_config(base_url: &str) -> TwilioConfig {
@@ -242,7 +288,6 @@ async fn write_http_response<S: AsyncWrite + Unpin>(
     stream.shutdown().await
 }
 
-#[cfg(feature = "rustls-no-provider")]
 fn install_test_crypto_provider() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
@@ -250,5 +295,14 @@ fn install_test_crypto_provider() {
     });
 }
 
-#[cfg(not(feature = "rustls-no-provider"))]
-fn install_test_crypto_provider() {}
+#[cfg(feature = "sync")]
+fn test_tls_config() -> ureq::tls::TlsConfig {
+    let builder = ureq::tls::TlsConfig::builder().disable_verification(true);
+    #[cfg(all(
+        feature = "native-tls",
+        not(feature = "rustls"),
+        not(feature = "rustls-no-provider")
+    ))]
+    let builder = builder.provider(ureq::tls::TlsProvider::NativeTls);
+    builder.build()
+}

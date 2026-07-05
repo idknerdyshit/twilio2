@@ -1,6 +1,6 @@
 //! Feature-gated raw diagnostics contract tests.
 
-#![cfg(feature = "sensitive-diagnostics")]
+#![cfg(all(feature = "async", feature = "sensitive-diagnostics"))]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

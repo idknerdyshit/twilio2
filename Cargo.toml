@@ -3,7 +3,7 @@ name = "twilio2"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
-description = "A small reqwest client for Twilio Programmable Messaging APIs."
+description = "Small async and blocking clients for Twilio Programmable Messaging APIs."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/idknerdyshit/twilio2"
 readme = "README.md"
@@ -16,24 +16,30 @@ keywords = ["twilio", "sms", "messaging"]
 categories = ["api-bindings", "web-programming::http-client"]
 
 [features]
-default = ["rustls"]
-rustls = ["reqwest/rustls"]
-native-tls = ["reqwest/native-tls"]
-rustls-no-provider = ["reqwest/rustls-no-provider"]
-sensitive-diagnostics = ["dep:bytes", "dep:http"]
+default = ["async", "rustls"]
+async = ["dep:reqwest", "dep:tokio", "dep:futures-core", "dep:async-stream"]
+sync = ["dep:ureq", "dep:serde_urlencoded", "dep:base64"]
+rustls = ["reqwest?/rustls", "ureq?/rustls"]
+native-tls = ["reqwest?/native-tls", "ureq?/native-tls"]
+rustls-no-provider = ["reqwest?/rustls-no-provider", "ureq?/rustls-no-provider"]
+sensitive-diagnostics = ["dep:bytes"]
 
 [dependencies]
-reqwest = { version = "0.13", default-features = false, features = ["form"] }
-async-stream = "0.3"
+async-stream = { version = "0.3", optional = true }
+base64 = { version = "0.22", optional = true }
 bytes = { version = "1", optional = true }
-futures-core = "0.3"
-http = { version = "1", optional = true }
+futures-core = { version = "0.3", optional = true }
+http = "1"
+reqwest = { version = "0.13", default-features = false, features = ["form"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_urlencoded = { version = "0.7", optional = true }
 thiserror = "2"
 time = { version = "0.3", features = ["parsing"] }
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time"], optional = true }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+ureq = { version = "3", default-features = false, optional = true }
+url = "2"
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
@@ -41,6 +47,14 @@ rustls = "0.23"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }
 tokio-rustls = "0.26"
 tracing-subscriber = "0.3"
+
+[[example]]
+name = "messages_builder"
+required-features = ["async"]
+
+[[example]]
+name = "messaging_services"
+required-features = ["async"]
 
 [lints.rust]
 unsafe_code = "deny"

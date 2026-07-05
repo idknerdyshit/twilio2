@@ -258,7 +258,32 @@ pub struct SensitiveRequestSnapshot {
     pub body: Option<Bytes>,
 }
 
+pub(crate) struct SensitiveRequestSnapshotParts {
+    pub(crate) method: http::Method,
+    pub(crate) url: String,
+    pub(crate) operation: &'static str,
+    pub(crate) attempt: u32,
+    pub(crate) max_retries: u32,
+    pub(crate) trace_label: Option<String>,
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Option<Bytes>,
+}
+
 impl SensitiveRequestSnapshot {
+    pub(crate) fn from_parts(parts: SensitiveRequestSnapshotParts) -> Self {
+        Self {
+            method: parts.method,
+            url: parts.url,
+            operation: parts.operation,
+            attempt: parts.attempt,
+            max_retries: parts.max_retries,
+            trace_label: parts.trace_label,
+            headers: parts.headers,
+            body: parts.body,
+        }
+    }
+
+    #[cfg(feature = "async")]
     pub(crate) fn from_request(
         request: &reqwest::Request,
         operation: &'static str,
@@ -270,7 +295,7 @@ impl SensitiveRequestSnapshot {
             .body()
             .and_then(reqwest::Body::as_bytes)
             .map(Bytes::copy_from_slice);
-        Self {
+        Self::from_parts(SensitiveRequestSnapshotParts {
             method: request.method().clone(),
             url: request.url().to_string(),
             operation,
@@ -279,7 +304,7 @@ impl SensitiveRequestSnapshot {
             trace_label: trace_label.map(ToOwned::to_owned),
             headers: request.headers().clone(),
             body,
-        }
+        })
     }
 }
 

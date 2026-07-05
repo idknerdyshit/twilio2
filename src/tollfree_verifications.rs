@@ -1,17 +1,28 @@
+#![cfg_attr(feature = "sync", allow(clippy::needless_pass_by_value))]
+
 use std::collections::BTreeMap;
 
-use reqwest::{Method, Url};
+use http::Method;
 use serde::Deserialize;
 use time::OffsetDateTime;
+#[cfg(feature = "async")]
 use tracing::Instrument as _;
+use url::Url;
 
+#[cfg(feature = "sync")]
+use crate::blocking_client::BlockingTwilioAccount;
+#[cfg(feature = "async")]
 use crate::client::TwilioAccount;
+#[cfg(feature = "sync")]
+use crate::common::BlockingTwilioPaginator;
 use crate::common::{
-    ApiFamily, DEFAULT_PAGE_SIZE, FormParam, PageFuture, RequestSpec, TwilioCreds, TwilioError,
-    TwilioPaginator, V1PageMeta, V1PageResource, WireV1PageMeta, decode_json_response,
-    has_non_empty, parse_iso8601, push_bool, push_sensitive, push_str, redacted_option,
-    request_span, validate_page_size, validate_v1_meta_key, validate_v1_next_page_continuation,
+    ApiFamily, DEFAULT_PAGE_SIZE, FormParam, RequestSpec, TwilioCreds, TwilioError, V1PageMeta,
+    V1PageResource, WireV1PageMeta, decode_json_response, has_non_empty, parse_iso8601, push_bool,
+    push_sensitive, push_str, redacted_option, request_span, validate_page_size,
+    validate_v1_meta_key, validate_v1_next_page_continuation,
 };
+#[cfg(feature = "async")]
+use crate::common::{PageFuture, TwilioPaginator};
 
 /// Toll-free Verification use-case category request values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1366,10 +1377,12 @@ impl WireTollfreeVerificationPage {
 
 /// Messaging v1 Toll-free Verifications collection.
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
 pub struct TollfreeVerificationsResource<'a> {
     account: TwilioAccount<'a>,
 }
 
+#[cfg(feature = "async")]
 impl<'a> TollfreeVerificationsResource<'a> {
     pub(crate) fn new(account: TwilioAccount<'a>) -> Self {
         Self { account }
@@ -1542,11 +1555,13 @@ fn split_tollfree_verification_page(
 
 /// One Messaging v1 Toll-free Verification resource.
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
 pub struct TollfreeVerificationResource<'a> {
     account: TwilioAccount<'a>,
     sid: &'a str,
 }
 
+#[cfg(feature = "async")]
 impl<'a> TollfreeVerificationResource<'a> {
     pub(crate) fn new(account: TwilioAccount<'a>, sid: &'a str) -> Self {
         Self { account, sid }
@@ -1649,8 +1664,302 @@ impl<'a> TollfreeVerificationResource<'a> {
     }
 }
 
+/// Blocking Messaging v1 Toll-free Verifications collection.
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingTollfreeVerificationsResource<'a> {
+    account: BlockingTwilioAccount<'a>,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingTollfreeVerificationsResource<'a> {
+    pub(crate) fn new(account: BlockingTwilioAccount<'a>) -> Self {
+        Self { account }
+    }
+
+    /// `POST /Tollfree/Verifications`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, or malformed JSON responses.
+    pub fn create(
+        self,
+        request: CreateTollfreeVerificationRequest<'a>,
+    ) -> Result<TwilioTollfreeVerification, TwilioError> {
+        request_span(
+            &self.account.client.config.messaging_base_url,
+            "tollfree_verifications.create",
+            "POST",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let spec = RequestSpec::new(
+                ApiFamily::Messaging,
+                Method::POST,
+                ["Tollfree", "Verifications"],
+            )
+            .operation("tollfree_verifications.create")
+            .form_params(request.form_params());
+            let parsed: WireTollfreeVerification =
+                self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(parsed.into_verification())
+        })
+    }
+
+    /// `GET /Tollfree/Verifications`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, malformed JSON responses, or invalid pagination
+    /// metadata.
+    pub fn list(
+        self,
+        request: ListTollfreeVerificationsRequest<'a>,
+    ) -> Result<TwilioTollfreeVerificationPage, TwilioError> {
+        request_span(
+            &self.account.client.config.messaging_base_url,
+            "tollfree_verifications.list",
+            "GET",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let mut url = self.collection_url()?;
+            request.apply_query(&mut url);
+            let spec = RequestSpec::from_url(
+                ApiFamily::Messaging,
+                Method::GET,
+                url.clone(),
+                "tollfree_verifications.list",
+            );
+            let raw = self.account.send_spec_raw(spec, &sensitive_values)?;
+            self.read_page(&raw.output, &sensitive_values, Some(&url))
+        })
+    }
+
+    /// Fetch a subsequent page by Twilio's `meta.next_page_url`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] when the URL is invalid, leaves the configured
+    /// Messaging API base, changes stable filters, or the HTTP request/response
+    /// fails.
+    pub fn list_page_url(
+        self,
+        next_page_url: &str,
+    ) -> Result<TwilioTollfreeVerificationPage, TwilioError> {
+        request_span(
+            &self.account.client.config.messaging_base_url,
+            "tollfree_verifications.list_page_url",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = vec![
+                self.account.creds.account_sid,
+                self.account.creds.auth_token,
+                next_page_url,
+            ];
+            let resource = V1PageResource::TollfreeVerifications;
+            let url = self.account.client.v1_page_url(next_page_url, resource)?;
+            let spec = RequestSpec::from_url(
+                ApiFamily::Messaging,
+                Method::GET,
+                url.clone(),
+                "tollfree_verifications.list_page_url",
+            );
+            let raw = self.account.send_spec_raw(spec, &sensitive_values)?;
+            self.read_page(&raw.output, &sensitive_values, Some(&url))
+        })
+    }
+
+    fn read_page(
+        self,
+        raw: &crate::RawResponse,
+        sensitive_values: &[&str],
+        current_url: Option<&Url>,
+    ) -> Result<TwilioTollfreeVerificationPage, TwilioError> {
+        let parsed: WireTollfreeVerificationPage = decode_json_response(raw, sensitive_values)?;
+        let page = parsed.into_page();
+        let resource = V1PageResource::TollfreeVerifications;
+        validate_v1_meta_key(&page.meta, resource)?;
+        validate_next_v1_url_blocking(
+            self.account,
+            page.meta.next_page_url.as_deref(),
+            resource,
+            current_url,
+        )?;
+        Ok(page)
+    }
+
+    /// Lazily list all Toll-free Verifications using a default page size of 50.
+    #[must_use]
+    pub fn list_all(
+        self,
+    ) -> BlockingTwilioPaginator<'a, TwilioTollfreeVerificationPage, TwilioTollfreeVerification>
+    {
+        self.list_all_with(ListTollfreeVerificationsRequest::new())
+    }
+
+    /// Lazily list all Toll-free Verifications using supplied first-page filters.
+    #[must_use]
+    pub fn list_all_with(
+        self,
+        mut request: ListTollfreeVerificationsRequest<'a>,
+    ) -> BlockingTwilioPaginator<'a, TwilioTollfreeVerificationPage, TwilioTollfreeVerification>
+    {
+        if request.page_size.is_none() {
+            request.page_size = Some(DEFAULT_PAGE_SIZE);
+        }
+        BlockingTwilioPaginator::new(
+            move |cursor| {
+                let resource = self;
+                if let Some(cursor) = cursor {
+                    resource.list_page_url(&cursor)
+                } else {
+                    resource.list(request)
+                }
+            },
+            split_tollfree_verification_page,
+        )
+    }
+
+    fn collection_url(self) -> Result<Url, TwilioError> {
+        self.account
+            .client
+            .messaging_endpoint(&["Tollfree", "Verifications"])
+    }
+}
+
+/// One blocking Messaging v1 Toll-free Verification resource.
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingTollfreeVerificationResource<'a> {
+    account: BlockingTwilioAccount<'a>,
+    sid: &'a str,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingTollfreeVerificationResource<'a> {
+    pub(crate) fn new(account: BlockingTwilioAccount<'a>, sid: &'a str) -> Self {
+        Self { account, sid }
+    }
+
+    /// `GET /Tollfree/Verifications/{Sid}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures, non-2xx API responses,
+    /// or malformed JSON responses.
+    pub fn fetch(self) -> Result<TwilioTollfreeVerification, TwilioError> {
+        request_span(
+            &self.account.client.config.messaging_base_url,
+            "tollfree_verification.fetch",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = self.sensitive_values();
+            let spec = self.verification_spec(Method::GET, "tollfree_verification.fetch")?;
+            let parsed: WireTollfreeVerification =
+                self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(parsed.into_verification())
+        })
+    }
+
+    /// `POST /Tollfree/Verifications/{Sid}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, or malformed JSON responses.
+    pub fn update(
+        self,
+        request: UpdateTollfreeVerificationRequest<'a>,
+    ) -> Result<TwilioTollfreeVerification, TwilioError> {
+        request_span(
+            &self.account.client.config.messaging_base_url,
+            "tollfree_verification.update",
+            "POST",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds, self.sid);
+            let spec = self
+                .verification_spec(Method::POST, "tollfree_verification.update")?
+                .form_params(request.form_params());
+            let parsed: WireTollfreeVerification =
+                self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(parsed.into_verification())
+        })
+    }
+
+    /// `DELETE /Tollfree/Verifications/{Sid}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures or non-2xx API responses.
+    pub fn delete(self) -> Result<(), TwilioError> {
+        request_span(
+            &self.account.client.config.messaging_base_url,
+            "tollfree_verification.delete",
+            "DELETE",
+        )
+        .in_scope(|| {
+            let sensitive_values = self.sensitive_values();
+            let spec = self.verification_spec(Method::DELETE, "tollfree_verification.delete")?;
+            self.account.send_spec_empty(spec, &sensitive_values)
+        })
+    }
+
+    fn verification_url(self) -> Result<Url, TwilioError> {
+        self.account
+            .client
+            .messaging_endpoint(&["Tollfree", "Verifications", self.sid])
+    }
+
+    fn verification_spec(
+        self,
+        method: Method,
+        operation: &'static str,
+    ) -> Result<RequestSpec, TwilioError> {
+        Ok(RequestSpec::from_url(
+            ApiFamily::Messaging,
+            method,
+            self.verification_url()?,
+            operation,
+        ))
+    }
+
+    fn sensitive_values(self) -> Vec<&'a str> {
+        vec![
+            self.account.creds.account_sid,
+            self.account.creds.auth_token,
+            self.sid,
+        ]
+    }
+}
+
+#[cfg(feature = "async")]
 fn validate_next_v1_url(
     account: TwilioAccount<'_>,
+    next_page_url: Option<&str>,
+    resource: V1PageResource<'_>,
+    current_url: Option<&Url>,
+) -> Result<(), TwilioError> {
+    if let Some(next_page_url) = next_page_url {
+        let next_url = account.client.v1_page_url(next_page_url, resource)?;
+        if let Some(current_url) = current_url {
+            validate_v1_next_page_continuation(current_url, &next_url, resource)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sync")]
+fn validate_next_v1_url_blocking(
+    account: BlockingTwilioAccount<'_>,
     next_page_url: Option<&str>,
     resource: V1PageResource<'_>,
     current_url: Option<&Url>,

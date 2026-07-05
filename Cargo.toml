@@ -10,6 +10,7 @@ readme = "README.md"
 exclude = [
     "/.github/**",
     "/.DS_Store",
+    "**/.DS_Store",
     "/lefthook.yml",
 ]
 keywords = ["twilio", "sms", "messaging"]

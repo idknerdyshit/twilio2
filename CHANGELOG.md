@@ -7,15 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [0.3.0] - 2026-07-05
+
 ### Changed
 
 - **Breaking:** `TwilioCreds` now owns redacted, zero-on-drop credential
   buffers. Construct credentials with `TwilioCreds::new(...)` and pass
   `&creds` to `client.account(...)` / `blocking_client.account(...)`.
+  (f283ab3)
+- Refactor Twilio client request validation and tests. (01161b7)
 
 ### Added
 
 - Add a public `Secret<T>` wrapper for redacted, zero-on-drop sensitive values.
+  (f283ab3)
+- Add blocking sync Twilio API. (0aaf518)
+- Add public contract coverage for new endpoints. (f1596a5)
+- Add deactivations, short codes, and toll-free verifications. (a69435a)
 
 ## [0.2.0] - 2026-07-03
 
@@ -34,8 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add Messaging Services create/fetch/list/page/update/delete support.
 - Add Service PhoneNumbers, ShortCodes, AlphaSenders, ChannelSenders, and
   DestinationAlphaSenders create/fetch/list/page/delete support.
-- Add Deactivations, account-level ShortCodes, and Toll-free Verifications
-  support.
 - Add Messaging v1 page metadata handling with `V1PageMeta`.
 - Add strict Messaging v1 `next_page_url` validation for origin, base path,
   resource path, query keys, duplicate keys, and stable filters.

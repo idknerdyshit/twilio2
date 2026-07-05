@@ -38,10 +38,10 @@ jobs:
         run: cargo test --locked --all-features
 
       - name: Test native TLS feature
-        run: cargo test --locked --no-default-features --features native-tls
+        run: cargo test --locked --no-default-features --features async,native-tls
 
       - name: Test rustls no-provider feature
-        run: cargo test --locked --no-default-features --features rustls-no-provider
+        run: cargo test --locked --no-default-features --features async,rustls-no-provider
 
       - name: Verify package
         if: matrix.os == 'ubuntu-latest'

@@ -55,8 +55,8 @@ Run the narrowest useful command while iterating, then the relevant broader set.
 - Test: `cargo test --locked`
 - All features: `cargo clippy --locked --all-targets --all-features -- -D warnings`
 - All-feature tests: `cargo test --locked --all-features`
-- Native TLS: `cargo test --locked --no-default-features --features native-tls`
-- Rustls no-provider: `cargo test --locked --no-default-features --features rustls-no-provider`
+- Native TLS: `cargo test --locked --no-default-features --features async,native-tls`
+- Rustls no-provider: `cargo test --locked --no-default-features --features async,rustls-no-provider`
 - Package check before release changes: `cargo publish --dry-run --locked`
 
 When changing behavior, add or update `tests/api.rs` assertions for method,

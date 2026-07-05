@@ -30,14 +30,14 @@ configured proxy origin or pagination will be rejected.
 
 ```toml
 [dependencies]
-twilio2 = "0.2"
+twilio2 = "0.3"
 ```
 
 For a blocking API, disable defaults and choose `sync` plus a TLS backend:
 
 ```toml
 [dependencies]
-twilio2 = { version = "0.2", default-features = false, features = ["sync", "rustls"] }
+twilio2 = { version = "0.3", default-features = false, features = ["sync", "rustls"] }
 ```
 
 For an async API with a different TLS backend, disable default features and
@@ -45,7 +45,7 @@ choose `async` plus that backend:
 
 ```toml
 [dependencies]
-twilio2 = { version = "0.2", default-features = false, features = ["async", "native-tls"] }
+twilio2 = { version = "0.3", default-features = false, features = ["async", "native-tls"] }
 ```
 
 The `rustls-no-provider` feature is also available for applications that install
@@ -57,7 +57,7 @@ least one of `async`/`sync` and at least one TLS backend.
 
 ## API Shape
 
-Version `0.2` uses account/resource builders throughout. Construct a client with
+Version `0.3` uses account/resource builders throughout. Construct a client with
 `TwilioClient::from_config`, `TwilioClient::from_http_client`, or
 `TwilioClient::try_with_config`, then call resource methods such as
 `client.account(&creds).messages().create(...)`. `TwilioClient` never stores

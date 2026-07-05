@@ -13,6 +13,7 @@ It covers:
 - Service sender subresources: PhoneNumbers, ShortCodes, AlphaSenders,
   ChannelSenders, and DestinationAlphaSenders
 - Messaging v1 Toll-free Verifications: create, fetch, list, update, and delete
+- Pricing v1 Messaging Countries: list, pagination, and per-country SMS prices
 
 The client stores only shared transport state and parsed base URLs. Account SID
 and Auth Token values are passed through `TwilioCreds` to an account-scoped
@@ -23,6 +24,7 @@ higher-level provider traits are intentionally outside this crate.
 Custom base URLs must use HTTPS. If a custom proxy is used for Messaging v1
 pagination, it must rewrite Twilio's absolute `next_page_url` values to the
 configured proxy origin or pagination will be rejected.
+Pricing v1 pagination follows the same rule for `pricing_base_url`.
 
 ## Setup
 
@@ -136,6 +138,35 @@ let service = client
 # }
 ```
 
+Pricing Messaging Countries use Twilio's Pricing v1 API:
+
+```rust,no_run
+use twilio2::{ListPricingMessagingCountriesRequest, TwilioClient, TwilioCreds};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# let client = TwilioClient::from_config(Default::default())?;
+# let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
+let countries = client
+    .account(&creds)
+    .pricing()
+    .messaging()
+    .countries()
+    .list_all_with(ListPricingMessagingCountriesRequest::new().page_size(50))
+    .collect_all()
+    .await?;
+
+let us_prices = client
+    .account(&creds)
+    .pricing()
+    .messaging()
+    .countries()
+    .fetch("US")
+    .await?;
+# let _ = (countries, us_prices);
+# Ok(())
+# }
+```
+
 For media downloads, `message(...).media().fetch(...)` calls Twilio's `.json`
 Media endpoint and `message(...).media().download(...)` calls the extensionless
 Media endpoint, returning `TwilioMediaContent { content_type, bytes }`.
@@ -150,7 +181,8 @@ use twilio2::{TwilioClient, TwilioClientConfig};
 # fn example() -> Result<(), Box<dyn std::error::Error>> {
 let config = TwilioClientConfig::new()
     .rest_base_url("https://proxy.example.com/twilio-rest")
-    .messaging_base_url("https://proxy.example.com/twilio-messaging/v1");
+    .messaging_base_url("https://proxy.example.com/twilio-messaging/v1")
+    .pricing_base_url("https://proxy.example.com/twilio-pricing/v1");
 let client = TwilioClient::from_config_and_http_client(config, reqwest::Client::new())?;
 # let _ = client;
 # Ok(())

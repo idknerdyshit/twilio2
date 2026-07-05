@@ -420,7 +420,7 @@ impl<'a> AccountShortCodesResource<'a> {
             self.read_page(&raw.output, &sensitive_values, Some(&url))
         }
         .instrument(request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "account_short_codes.list",
             "GET",
         ))
@@ -459,7 +459,7 @@ impl<'a> AccountShortCodesResource<'a> {
             self.read_page(&raw.output, &sensitive_values, Some(&url))
         }
         .instrument(request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "account_short_codes.list_page_uri",
             "GET",
         ))
@@ -569,7 +569,7 @@ impl<'a> AccountShortCodeResource<'a> {
             Ok(parsed.into_short_code())
         }
         .instrument(request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "account_short_code.fetch",
             "GET",
         ))
@@ -597,7 +597,7 @@ impl<'a> AccountShortCodeResource<'a> {
             Ok(parsed.into_short_code())
         }
         .instrument(request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "account_short_code.update",
             "POST",
         ))
@@ -662,7 +662,7 @@ impl<'a> BlockingAccountShortCodesResource<'a> {
         request: ListAccountShortCodesRequest<'a>,
     ) -> Result<TwilioAccountShortCodePage, TwilioError> {
         request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "account_short_codes.list",
             "GET",
         )
@@ -694,7 +694,7 @@ impl<'a> BlockingAccountShortCodesResource<'a> {
         next_page_uri: &str,
     ) -> Result<TwilioAccountShortCodePage, TwilioError> {
         request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "account_short_codes.list_page_uri",
             "GET",
         )
@@ -808,7 +808,7 @@ impl<'a> BlockingAccountShortCodeResource<'a> {
     /// or malformed JSON responses.
     pub fn fetch(self) -> Result<TwilioAccountShortCode, TwilioError> {
         request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "account_short_code.fetch",
             "GET",
         )
@@ -832,7 +832,7 @@ impl<'a> BlockingAccountShortCodeResource<'a> {
         request: UpdateAccountShortCodeRequest<'a>,
     ) -> Result<TwilioAccountShortCode, TwilioError> {
         request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "account_short_code.update",
             "POST",
         )

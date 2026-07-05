@@ -98,7 +98,7 @@ impl<'a> DeactivationsResource<'a> {
             Ok(parsed.into_deactivation())
         }
         .instrument(request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "deactivations.fetch",
             "GET",
         ))
@@ -130,7 +130,7 @@ impl<'a> BlockingDeactivationsResource<'a> {
         request: FetchDeactivationsRequest<'a>,
     ) -> Result<TwilioDeactivation, TwilioError> {
         request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "deactivations.fetch",
             "GET",
         )

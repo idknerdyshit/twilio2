@@ -1368,7 +1368,7 @@ impl<'a> ServicesResource<'a> {
             Ok(service.into_service())
         }
         .instrument(request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "services.create",
             "POST",
         ))
@@ -1401,7 +1401,7 @@ impl<'a> ServicesResource<'a> {
             self.read_page(&raw.output, &sensitive_values, Some(&url))
         }
         .instrument(request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "services.list",
             "GET",
         ))
@@ -1437,7 +1437,7 @@ impl<'a> ServicesResource<'a> {
             self.read_page(&raw.output, &sensitive_values, Some(&url))
         }
         .instrument(request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "services.list_page_url",
             "GET",
         ))
@@ -1524,7 +1524,7 @@ impl<'a> ServiceResource<'a> {
             Ok(service.into_service())
         }
         .instrument(request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "service.fetch",
             "GET",
         ))
@@ -1552,7 +1552,7 @@ impl<'a> ServiceResource<'a> {
             Ok(service.into_service())
         }
         .instrument(request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "service.update",
             "POST",
         ))
@@ -1575,7 +1575,7 @@ impl<'a> ServiceResource<'a> {
             self.account.send_spec_empty(spec, &sensitive_values).await
         }
         .instrument(request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "service.delete",
             "DELETE",
         ))
@@ -1720,7 +1720,7 @@ macro_rules! impl_sender_resource {
                     Ok(parsed.$create_map())
                 }
                 .instrument(request_span(
-                    &self.service.account.client.config.messaging_base_url,
+                    &self.service.account.client.config.messaging,
                     concat!("service.", stringify!($items_field), ".create"),
                     "POST",
                 ))
@@ -1754,7 +1754,7 @@ macro_rules! impl_sender_resource {
                     Ok(parsed.$create_map())
                 }
                 .instrument(request_span(
-                    &self.service.account.client.config.messaging_base_url,
+                    &self.service.account.client.config.messaging,
                     concat!("service.", stringify!($items_field), ".fetch"),
                     "GET",
                 ))
@@ -1792,7 +1792,7 @@ macro_rules! impl_sender_resource {
                     self.read_page(&raw.output, &sensitive_values, Some(&url))
                 }
                 .instrument(request_span(
-                    &self.service.account.client.config.messaging_base_url,
+                    &self.service.account.client.config.messaging,
                     concat!("service.", stringify!($items_field), ".list"),
                     "GET",
                 ))
@@ -1836,7 +1836,7 @@ macro_rules! impl_sender_resource {
                     self.read_page(&raw.output, &sensitive_values, Some(&url))
                 }
                 .instrument(request_span(
-                    &self.service.account.client.config.messaging_base_url,
+                    &self.service.account.client.config.messaging,
                     concat!("service.", stringify!($items_field), ".list_page_url"),
                     "GET",
                 ))
@@ -1868,7 +1868,7 @@ macro_rules! impl_sender_resource {
                         .await
                 }
                 .instrument(request_span(
-                    &self.service.account.client.config.messaging_base_url,
+                    &self.service.account.client.config.messaging,
                     concat!("service.", stringify!($items_field), ".delete"),
                     "DELETE",
                 ))
@@ -2046,7 +2046,7 @@ impl<'a> ServiceDestinationAlphaSendersResource<'a> {
             Ok(parsed.into_destination_alpha_sender())
         }
         .instrument(request_span(
-            &self.service.account.client.config.messaging_base_url,
+            &self.service.account.client.config.messaging,
             "service.destination_alpha_senders.create",
             "POST",
         ))
@@ -2080,7 +2080,7 @@ impl<'a> ServiceDestinationAlphaSendersResource<'a> {
             Ok(parsed.into_destination_alpha_sender())
         }
         .instrument(request_span(
-            &self.service.account.client.config.messaging_base_url,
+            &self.service.account.client.config.messaging,
             "service.destination_alpha_senders.fetch",
             "GET",
         ))
@@ -2120,7 +2120,7 @@ impl<'a> ServiceDestinationAlphaSendersResource<'a> {
             self.read_page(&raw.output, &sensitive_values, Some(&url))
         }
         .instrument(request_span(
-            &self.service.account.client.config.messaging_base_url,
+            &self.service.account.client.config.messaging,
             "service.destination_alpha_senders.list",
             "GET",
         ))
@@ -2167,7 +2167,7 @@ impl<'a> ServiceDestinationAlphaSendersResource<'a> {
             self.read_page(&raw.output, &sensitive_values, Some(&url))
         }
         .instrument(request_span(
-            &self.service.account.client.config.messaging_base_url,
+            &self.service.account.client.config.messaging,
             "service.destination_alpha_senders.list_page_url",
             "GET",
         ))
@@ -2198,7 +2198,7 @@ impl<'a> ServiceDestinationAlphaSendersResource<'a> {
                 .await
         }
         .instrument(request_span(
-            &self.service.account.client.config.messaging_base_url,
+            &self.service.account.client.config.messaging,
             "service.destination_alpha_senders.delete",
             "DELETE",
         ))
@@ -2324,7 +2324,7 @@ impl<'a> BlockingServicesResource<'a> {
     /// non-2xx API responses, or malformed JSON responses.
     pub fn create(self, request: CreateServiceRequest<'a>) -> Result<TwilioService, TwilioError> {
         request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "services.create",
             "POST",
         )
@@ -2348,7 +2348,7 @@ impl<'a> BlockingServicesResource<'a> {
     /// metadata.
     pub fn list(self, request: ListServicesRequest<'a>) -> Result<TwilioServicePage, TwilioError> {
         request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "services.list",
             "GET",
         )
@@ -2377,7 +2377,7 @@ impl<'a> BlockingServicesResource<'a> {
     /// fails.
     pub fn list_page_url(self, next_page_url: &str) -> Result<TwilioServicePage, TwilioError> {
         request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "services.list_page_url",
             "GET",
         )
@@ -2468,7 +2468,7 @@ impl<'a> BlockingServiceResource<'a> {
     /// or malformed JSON responses.
     pub fn fetch(self) -> Result<TwilioService, TwilioError> {
         request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "service.fetch",
             "GET",
         )
@@ -2488,7 +2488,7 @@ impl<'a> BlockingServiceResource<'a> {
     /// non-2xx API responses, or malformed JSON responses.
     pub fn update(self, request: UpdateServiceRequest<'a>) -> Result<TwilioService, TwilioError> {
         request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "service.update",
             "POST",
         )
@@ -2514,7 +2514,7 @@ impl<'a> BlockingServiceResource<'a> {
     /// Returns [`TwilioError`] for transport failures or non-2xx API responses.
     pub fn delete(self) -> Result<(), TwilioError> {
         request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "service.delete",
             "DELETE",
         )
@@ -2629,7 +2629,7 @@ macro_rules! impl_blocking_sender_resource {
             /// non-2xx API responses, or malformed JSON responses.
             pub fn create(self, request: $create_req) -> Result<$item, TwilioError> {
                 request_span(
-                    &self.service.account.client.config.messaging_base_url,
+                    &self.service.account.client.config.messaging,
                     concat!("service.", stringify!($items_field), ".create"),
                     "POST",
                 )
@@ -2659,7 +2659,7 @@ macro_rules! impl_blocking_sender_resource {
             /// responses, or malformed JSON responses.
             pub fn fetch(self, sid: &'a str) -> Result<$item, TwilioError> {
                 request_span(
-                    &self.service.account.client.config.messaging_base_url,
+                    &self.service.account.client.config.messaging,
                     concat!("service.", stringify!($items_field), ".fetch"),
                     "GET",
                 )
@@ -2695,7 +2695,7 @@ macro_rules! impl_blocking_sender_resource {
                 request: ListServiceSubresourcesRequest<'a>,
             ) -> Result<$page, TwilioError> {
                 request_span(
-                    &self.service.account.client.config.messaging_base_url,
+                    &self.service.account.client.config.messaging,
                     concat!("service.", stringify!($items_field), ".list"),
                     "GET",
                 )
@@ -2728,7 +2728,7 @@ macro_rules! impl_blocking_sender_resource {
             /// HTTP request/response fails.
             pub fn list_page_url(self, next_page_url: &str) -> Result<$page, TwilioError> {
                 request_span(
-                    &self.service.account.client.config.messaging_base_url,
+                    &self.service.account.client.config.messaging,
                     concat!("service.", stringify!($items_field), ".list_page_url"),
                     "GET",
                 )
@@ -2769,7 +2769,7 @@ macro_rules! impl_blocking_sender_resource {
             /// responses.
             pub fn delete(self, sid: &'a str) -> Result<(), TwilioError> {
                 request_span(
-                    &self.service.account.client.config.messaging_base_url,
+                    &self.service.account.client.config.messaging,
                     concat!("service.", stringify!($items_field), ".delete"),
                     "DELETE",
                 )
@@ -2945,7 +2945,7 @@ impl<'a> BlockingServiceDestinationAlphaSendersResource<'a> {
         request: CreateDestinationAlphaSenderRequest<'a>,
     ) -> Result<TwilioDestinationAlphaSender, TwilioError> {
         request_span(
-            &self.service.account.client.config.messaging_base_url,
+            &self.service.account.client.config.messaging,
             "service.destination_alpha_senders.create",
             "POST",
         )
@@ -2972,7 +2972,7 @@ impl<'a> BlockingServiceDestinationAlphaSendersResource<'a> {
     /// or malformed JSON responses.
     pub fn fetch(self, sid: &'a str) -> Result<TwilioDestinationAlphaSender, TwilioError> {
         request_span(
-            &self.service.account.client.config.messaging_base_url,
+            &self.service.account.client.config.messaging,
             "service.destination_alpha_senders.fetch",
             "GET",
         )
@@ -3008,7 +3008,7 @@ impl<'a> BlockingServiceDestinationAlphaSendersResource<'a> {
         request: ListDestinationAlphaSendersRequest<'a>,
     ) -> Result<TwilioDestinationAlphaSenderPage, TwilioError> {
         request_span(
-            &self.service.account.client.config.messaging_base_url,
+            &self.service.account.client.config.messaging,
             "service.destination_alpha_senders.list",
             "GET",
         )
@@ -3046,7 +3046,7 @@ impl<'a> BlockingServiceDestinationAlphaSendersResource<'a> {
         next_page_url: &str,
     ) -> Result<TwilioDestinationAlphaSenderPage, TwilioError> {
         request_span(
-            &self.service.account.client.config.messaging_base_url,
+            &self.service.account.client.config.messaging,
             "service.destination_alpha_senders.list_page_url",
             "GET",
         )
@@ -3086,7 +3086,7 @@ impl<'a> BlockingServiceDestinationAlphaSendersResource<'a> {
     /// Returns [`TwilioError`] for transport failures or non-2xx API responses.
     pub fn delete(self, sid: &'a str) -> Result<(), TwilioError> {
         request_span(
-            &self.service.account.client.config.messaging_base_url,
+            &self.service.account.client.config.messaging,
             "service.destination_alpha_senders.delete",
             "DELETE",
         )

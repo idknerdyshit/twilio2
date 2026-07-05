@@ -6,15 +6,19 @@ mod support;
 use std::time::Duration;
 
 use http::Method;
+use rust_decimal::Decimal;
 #[cfg(feature = "sensitive-diagnostics")]
 use support::twilio_config;
 use support::{HttpsMockServer, MockResponse, blocking_client_for, test_agent, test_creds};
 use twilio2::{
     ApiFamily, BlockingTwilioClient, CreateMessageRequest, CreateTollfreeVerificationRequest,
-    FetchDeactivationsRequest, ListMessagesRequest, ListTollfreeVerificationsRequest, Operation,
-    RawResponse, RequestOptions, RequestSpec, RetryPolicy, TollfreeBusinessRegistrationAuthority,
-    TollfreeBusinessType, TollfreeMessageVolume, TollfreeOptInType, TollfreeUseCaseCategory,
-    TollfreeVerificationStatus, TollfreeVettingProvider, TwilioClientConfig, TwilioError,
+    FetchDeactivationsRequest, ListMessagesRequest, ListPricingMessagingCountriesRequest,
+    ListTollfreeVerificationsRequest, Operation, RawResponse, RequestOptions, RequestSpec,
+    RetryPolicy, TollfreeBusinessRegistrationAuthority, TollfreeBusinessType,
+    TollfreeMessageVolume, TollfreeOptInType, TollfreeUseCaseCategory, TollfreeVerificationStatus,
+    TollfreeVettingProvider, TwilioClientConfig, TwilioError, TwilioInboundSmsPrice,
+    TwilioOutboundSmsPrice, TwilioPricingMessaging, TwilioPricingMessagingCountry,
+    TwilioPricingMessagingCountryPage, TwilioPricingMessagingCountrySummary, TwilioSmsPrice,
     UpdateTollfreeVerificationRequest,
 };
 
@@ -48,6 +52,7 @@ fn constructors_config_and_debug_are_ergonomic_and_redacted() {
     let config = TwilioClientConfig::new()
         .rest_base_url("https://proxy.example.test/rest")
         .messaging_base_url("https://proxy.example.test/messaging/v1")
+        .pricing_base_url("https://proxy.example.test/pricing/v1")
         .timeout(Duration::from_secs(7))
         .user_agent("test-agent/1.0");
 
@@ -58,6 +63,10 @@ fn constructors_config_and_debug_are_ergonomic_and_redacted() {
         retained.messaging_base_url,
         "https://proxy.example.test/messaging/v1"
     );
+    assert_eq!(
+        retained.pricing_base_url,
+        "https://proxy.example.test/pricing/v1"
+    );
     assert!(!format!("{config:?}").contains("proxy.example.test"));
     assert!(!format!("{retained:?}").contains("proxy.example.test"));
 
@@ -66,6 +75,183 @@ fn constructors_config_and_debug_are_ergonomic_and_redacted() {
         default.config().rest_base_url,
         twilio2::DEFAULT_REST_BASE_URL
     );
+    assert_eq!(
+        default.config().pricing_base_url,
+        twilio2::DEFAULT_PRICING_BASE_URL
+    );
+}
+
+#[test]
+fn pricing_messaging_fetch_country_detail_and_pagination_work() {
+    let runtime = runtime();
+    let next_page_url = "__BASE_URL__/v1/Messaging/Countries?PageSize=2&Page=1&PageToken=next";
+    let server = start_server(
+        &runtime,
+        vec![
+            MockResponse::json(pricing_messaging_json()),
+            MockResponse::json(pricing_country_detail_json("US")),
+            MockResponse::json(pricing_country_page_json(
+                &[pricing_country_summary_json("United States", "US")],
+                Some(next_page_url),
+                0,
+                2,
+            )),
+            MockResponse::json(pricing_country_page_json(
+                &[pricing_country_summary_json("Canada", "CA")],
+                None,
+                1,
+                2,
+            )),
+            MockResponse::json(pricing_country_page_json(
+                &[pricing_country_summary_json("United States", "US")],
+                Some(next_page_url),
+                0,
+                2,
+            )),
+            MockResponse::json(pricing_country_page_json(
+                &[pricing_country_summary_json("Canada", "CA")],
+                None,
+                1,
+                2,
+            )),
+        ],
+    );
+    let client = blocking_client_for(&server);
+    let account = client.account(test_creds());
+
+    let messaging: TwilioPricingMessaging = account.pricing().messaging().fetch().unwrap();
+    assert_eq!(messaging.name.as_deref(), Some("Messaging"));
+    assert!(!format!("{messaging:?}").contains("pricing.twilio.com"));
+
+    let country: TwilioPricingMessagingCountry = account
+        .pricing()
+        .messaging()
+        .countries()
+        .fetch("us")
+        .unwrap();
+    let inbound: &TwilioInboundSmsPrice = &country.inbound_sms_prices[0];
+    assert_eq!(inbound.base_price, Some(Decimal::new(5, 2)));
+    assert_eq!(inbound.current_price, Some(Decimal::new(4, 2)));
+    let outbound: &TwilioOutboundSmsPrice = &country.outbound_sms_prices[0];
+    let sms_price: &TwilioSmsPrice = &outbound.prices[0];
+    assert_eq!(sms_price.current_price, Some(Decimal::new(45, 3)));
+
+    let countries = account.pricing().messaging().countries();
+    let first: TwilioPricingMessagingCountryPage = countries
+        .list(
+            ListPricingMessagingCountriesRequest::new()
+                .page_size(2)
+                .page(0),
+        )
+        .unwrap();
+    let first_country: &TwilioPricingMessagingCountrySummary = &first.countries[0];
+    assert_eq!(first_country.iso_country.as_deref(), Some("US"));
+    let second = countries
+        .list_page_url(first.meta.next_page_url.as_deref().unwrap())
+        .unwrap();
+    assert_eq!(second.countries[0].iso_country.as_deref(), Some("CA"));
+
+    let all = countries
+        .list_all_with(ListPricingMessagingCountriesRequest::new().page_size(2))
+        .collect_all()
+        .unwrap();
+    assert_eq!(all.len(), 2);
+
+    let requests = server.requests();
+    assert_eq!(requests[0].path, "/v1/Messaging");
+    assert_eq!(requests[1].path, "/v1/Messaging/Countries/US");
+    assert_eq!(
+        requests[2].path,
+        "/v1/Messaging/Countries?PageSize=2&Page=0"
+    );
+    assert_eq!(
+        requests[3].path,
+        "/v1/Messaging/Countries?PageSize=2&Page=1&PageToken=next"
+    );
+    assert_eq!(requests[4].path, "/v1/Messaging/Countries?PageSize=2");
+    assert_basic_auth(&requests[0]);
+}
+
+#[test]
+fn pricing_messaging_countries_validate_requests_and_page_urls() {
+    let runtime = runtime();
+    let server = start_server(
+        &runtime,
+        vec![MockResponse::json(pricing_country_page_json(
+            &[pricing_country_summary_json("United States", "US")],
+            Some("__BASE_URL__/v1/Messaging/Countries?PageSize=3&Page=1&PageToken=next"),
+            0,
+            2,
+        ))],
+    );
+    let client = blocking_client_for(&server);
+    let countries = client
+        .account(test_creds())
+        .pricing()
+        .messaging()
+        .countries();
+
+    let err = countries
+        .list(ListPricingMessagingCountriesRequest::new().page_size(0))
+        .unwrap_err();
+    assert_invalid_request(err, "PageSize");
+
+    let err = countries.fetch("usa").unwrap_err();
+    assert_invalid_request(err, "IsoCountry");
+
+    let err = countries
+        .list_page_url("https://example.test/v1/Messaging/Countries?Page=1")
+        .unwrap_err();
+    assert!(matches!(err, TwilioError::InvalidResponseMetadata(_)));
+
+    let err = countries
+        .list(ListPricingMessagingCountriesRequest::new().page_size(2))
+        .unwrap_err();
+    assert!(matches!(err, TwilioError::InvalidResponseMetadata(_)));
+
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn pricing_continuation_api_errors_redact_page_url() {
+    let runtime = runtime();
+    let page_token = "pricing-cursor-secret";
+    let server = start_server(
+        &runtime,
+        vec![MockResponse::status_json(
+            400,
+            format!(
+                r#"{{"message":"bad cursor __BASE_URL__/v1/Messaging/Countries?PageSize=2&Page=1&PageToken={page_token}"}}"#
+            ),
+        )],
+    );
+    let next_page_url = format!(
+        "{}/v1/Messaging/Countries?PageSize=2&Page=1&PageToken={page_token}",
+        server.base_url
+    );
+
+    let err = blocking_client_for(&server)
+        .account(test_creds())
+        .pricing()
+        .messaging()
+        .countries()
+        .list_page_url(&next_page_url)
+        .unwrap_err();
+
+    match err {
+        TwilioError::Api { status, body } => {
+            assert_eq!(status, 400);
+            assert!(
+                !body.contains(&next_page_url),
+                "API error body leaked cursor: {body}"
+            );
+            assert!(
+                !body.contains(page_token),
+                "API error body leaked page token: {body}"
+            );
+        }
+        other => panic!("expected API error, got {other:?}"),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -577,6 +763,73 @@ fn tollfree_verification_page_json(
             "verifications": [{verifications}]
         }}"#,
         verifications = verifications.join(",")
+    )
+}
+
+fn pricing_messaging_json() -> String {
+    r#"{
+        "name":"Messaging",
+        "url":"https://pricing.twilio.com/v1/Messaging",
+        "links":{"countries":"https://pricing.twilio.com/v1/Messaging/Countries"}
+    }"#
+    .to_owned()
+}
+
+fn pricing_country_summary_json(country: &str, iso_country: &str) -> String {
+    format!(
+        r#"{{
+            "country":"{country}",
+            "iso_country":"{iso_country}",
+            "url":"https://pricing.twilio.com/v1/Messaging/Countries/{iso_country}"
+        }}"#
+    )
+}
+
+fn pricing_country_page_json(
+    countries: &[String],
+    next_page_url: Option<&str>,
+    page: u32,
+    page_size: u32,
+) -> String {
+    let countries = countries.join(",");
+    let next = next_page_url.map_or_else(|| "null".to_owned(), |value| format!(r#""{value}""#));
+    format!(
+        r#"{{
+            "countries":[{countries}],
+            "meta":{{
+                "first_page_url":"__BASE_URL__/v1/Messaging/Countries?PageSize={page_size}&Page=0",
+                "key":"countries",
+                "next_page_url":{next},
+                "page":{page},
+                "page_size":{page_size},
+                "previous_page_url":null,
+                "url":"__BASE_URL__/v1/Messaging/Countries?PageSize={page_size}&Page={page}"
+            }}
+        }}"#
+    )
+}
+
+fn pricing_country_detail_json(iso_country: &str) -> String {
+    format!(
+        r#"{{
+            "country":"United States",
+            "iso_country":"{iso_country}",
+            "inbound_sms_prices":[
+                {{"base_price":"0.05","current_price":0.04,"number_type":"mobile"}}
+            ],
+            "outbound_sms_prices":[
+                {{
+                    "carrier":"att",
+                    "mcc":"310",
+                    "mnc":"410",
+                    "prices":[
+                        {{"base_price":"0.05","current_price":0.045,"number_type":"mobile"}}
+                    ]
+                }}
+            ],
+            "price_unit":"USD",
+            "url":"https://pricing.twilio.com/v1/Messaging/Countries/{iso_country}"
+        }}"#
     )
 }
 

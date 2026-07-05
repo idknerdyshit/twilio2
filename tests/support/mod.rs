@@ -180,6 +180,7 @@ pub fn twilio_config(base_url: &str) -> TwilioConfig {
     TwilioConfig::new()
         .rest_base_url(base_url)
         .messaging_base_url(format!("{base_url}/v1"))
+        .pricing_base_url(format!("{base_url}/v1"))
 }
 
 pub async fn unused_https_base_url() -> String {

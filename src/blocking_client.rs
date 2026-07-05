@@ -13,8 +13,8 @@ use crate::common::{
     TwilioClientConfig, TwilioConfig, TwilioCreds, TwilioError, api_error_from_body,
     api_error_from_read_error_message, attempt_error, attempt_response, attempt_span,
     decode_json_response, endpoint_url_from_base, legacy_page_uri_url_from_base,
-    owned_sensitive_values, read_limited_reader_body, transport_error_from_message,
-    v1_page_url_from_base,
+    owned_sensitive_values, pricing_page_url_from_base, read_limited_reader_body,
+    transport_error_from_message, v1_page_url_from_base,
 };
 use crate::deactivations::BlockingDeactivationsResource;
 #[cfg(feature = "sensitive-diagnostics")]
@@ -24,6 +24,7 @@ use crate::diagnostics::{
     SensitiveTransportErrorStage,
 };
 use crate::messages::{BlockingMessageResource, BlockingMessagesResource};
+use crate::pricing::BlockingPricingResource;
 use crate::services::{BlockingServiceResource, BlockingServicesResource};
 use crate::short_codes::{BlockingAccountShortCodeResource, BlockingAccountShortCodesResource};
 use crate::tollfree_verifications::{
@@ -319,11 +320,15 @@ impl BlockingTwilioClient {
     }
 
     pub(crate) fn rest_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
-        endpoint_url_from_base(&self.config.rest_base_url, segments)
+        endpoint_url_from_base(&self.config.rest, segments)
     }
 
     pub(crate) fn messaging_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
-        endpoint_url_from_base(&self.config.messaging_base_url, segments)
+        endpoint_url_from_base(&self.config.messaging, segments)
+    }
+
+    pub(crate) fn pricing_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
+        endpoint_url_from_base(&self.config.pricing, segments)
     }
 
     pub(crate) fn legacy_page_url(
@@ -332,7 +337,7 @@ impl BlockingTwilioClient {
         account_sid: &str,
         resource: crate::common::LegacyPageResource<'_>,
     ) -> Result<Url, TwilioError> {
-        legacy_page_uri_url_from_base(&self.config.rest_base_url, page_uri, account_sid, resource)
+        legacy_page_uri_url_from_base(&self.config.rest, page_uri, account_sid, resource)
     }
 
     pub(crate) fn v1_page_url(
@@ -340,7 +345,15 @@ impl BlockingTwilioClient {
         page_url: &str,
         resource: crate::common::V1PageResource<'_>,
     ) -> Result<Url, TwilioError> {
-        v1_page_url_from_base(&self.config.messaging_base_url, page_url, resource)
+        v1_page_url_from_base(&self.config.messaging, page_url, resource)
+    }
+
+    pub(crate) fn pricing_page_url(
+        &self,
+        page_url: &str,
+        resource: crate::common::PricingPageResource,
+    ) -> Result<Url, TwilioError> {
+        pricing_page_url_from_base(&self.config.pricing, page_url, resource)
     }
 
     pub(crate) fn url_for_spec(
@@ -354,8 +367,9 @@ impl BlockingTwilioClient {
                     options
                         .base_url_for(spec.family)?
                         .unwrap_or_else(|| match spec.family {
-                            ApiFamily::Rest => self.config.rest_base_url.clone(),
-                            ApiFamily::Messaging => self.config.messaging_base_url.clone(),
+                            ApiFamily::Rest => self.config.rest.clone(),
+                            ApiFamily::Messaging => self.config.messaging.clone(),
+                            ApiFamily::Pricing => self.config.pricing.clone(),
                         });
                 let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
                 endpoint_url_from_base(&base, &refs)?
@@ -391,6 +405,7 @@ impl BlockingTwilioClient {
         if spec.is_continuation()
             && (options.rest_base_url.is_some()
                 || options.messaging_base_url.is_some()
+                || options.pricing_base_url.is_some()
                 || !options.query.is_empty())
         {
             return Err(BlockingRawAttemptError {
@@ -770,6 +785,12 @@ impl<'a> BlockingTwilioAccount<'a> {
     #[must_use]
     pub fn tollfree_verification(self, sid: &'a str) -> BlockingTollfreeVerificationResource<'a> {
         BlockingTollfreeVerificationResource::new(self, sid)
+    }
+
+    /// Pricing v1 resources.
+    #[must_use]
+    pub fn pricing(self) -> BlockingPricingResource<'a> {
+        BlockingPricingResource::new(self)
     }
 
     /// Execute a custom Twilio operation and decode its response.

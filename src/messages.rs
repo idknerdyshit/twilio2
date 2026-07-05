@@ -1152,7 +1152,7 @@ impl<'a> MessagesResource<'a> {
             Ok(msg.into_message())
         }
         .instrument(request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "messages.create",
             "POST",
         ))
@@ -1186,7 +1186,7 @@ impl<'a> MessagesResource<'a> {
             self.read_page(&raw.output, &sensitive_values, Some(&url))
         }
         .instrument(request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "messages.list",
             "GET",
         ))
@@ -1225,7 +1225,7 @@ impl<'a> MessagesResource<'a> {
             self.read_page(&raw.output, &sensitive_values, Some(&url))
         }
         .instrument(request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "messages.list_page_uri",
             "GET",
         ))
@@ -1323,7 +1323,7 @@ impl<'a> MessageResource<'a> {
             Ok(msg.into_message())
         }
         .instrument(request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "message.fetch",
             "GET",
         ))
@@ -1351,7 +1351,7 @@ impl<'a> MessageResource<'a> {
             Ok(msg.into_message())
         }
         .instrument(request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "message.update",
             "POST",
         ))
@@ -1374,7 +1374,7 @@ impl<'a> MessageResource<'a> {
             self.account.send_spec_empty(spec, &sensitive_values).await
         }
         .instrument(request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "message.delete",
             "DELETE",
         ))
@@ -1443,7 +1443,7 @@ impl<'a> MessageMediaResource<'a> {
             Ok(media.into_media())
         }
         .instrument(request_span(
-            &self.message.account.client.config.rest_base_url,
+            &self.message.account.client.config.rest,
             "message.media.fetch",
             "GET",
         ))
@@ -1475,7 +1475,7 @@ impl<'a> MessageMediaResource<'a> {
             })
         }
         .instrument(request_span(
-            &self.message.account.client.config.rest_base_url,
+            &self.message.account.client.config.rest,
             "message.media.download",
             "GET",
         ))
@@ -1517,7 +1517,7 @@ impl<'a> MessageMediaResource<'a> {
             self.read_page(&raw.output, &sensitive_values, Some(&url))
         }
         .instrument(request_span(
-            &self.message.account.client.config.rest_base_url,
+            &self.message.account.client.config.rest,
             "message.media.list",
             "GET",
         ))
@@ -1560,7 +1560,7 @@ impl<'a> MessageMediaResource<'a> {
             self.read_page(&raw.output, &sensitive_values, Some(&url))
         }
         .instrument(request_span(
-            &self.message.account.client.config.rest_base_url,
+            &self.message.account.client.config.rest,
             "message.media.list_page_uri",
             "GET",
         ))
@@ -1582,7 +1582,7 @@ impl<'a> MessageMediaResource<'a> {
                 .await
         }
         .instrument(request_span(
-            &self.message.account.client.config.rest_base_url,
+            &self.message.account.client.config.rest,
             "message.media.delete",
             "DELETE",
         ))
@@ -1737,7 +1737,7 @@ impl MessageFeedbackResource<'_> {
             Ok(feedback.into_feedback())
         }
         .instrument(request_span(
-            &self.message.account.client.config.rest_base_url,
+            &self.message.account.client.config.rest,
             "message.feedback.create",
             "POST",
         ))
@@ -1764,12 +1764,7 @@ impl<'a> BlockingMessagesResource<'a> {
     /// Returns [`TwilioError`] for invalid requests, transport failures,
     /// non-2xx API responses, or malformed JSON responses.
     pub fn create(self, request: CreateMessageRequest<'a>) -> Result<TwilioMessage, TwilioError> {
-        request_span(
-            &self.account.client.config.rest_base_url,
-            "messages.create",
-            "POST",
-        )
-        .in_scope(|| {
+        request_span(&self.account.client.config.rest, "messages.create", "POST").in_scope(|| {
             request.validate()?;
             let sensitive_values = request.sensitive_values(self.account.creds);
             let spec = RequestSpec::new(
@@ -1797,12 +1792,7 @@ impl<'a> BlockingMessagesResource<'a> {
     /// non-2xx API responses, malformed JSON responses, or invalid pagination
     /// metadata.
     pub fn list(self, request: ListMessagesRequest<'a>) -> Result<TwilioMessagePage, TwilioError> {
-        request_span(
-            &self.account.client.config.rest_base_url,
-            "messages.list",
-            "GET",
-        )
-        .in_scope(|| {
+        request_span(&self.account.client.config.rest, "messages.list", "GET").in_scope(|| {
             request.validate()?;
             let sensitive_values = request.sensitive_values(self.account.creds);
             let mut url = self.account.client.rest_endpoint(&[
@@ -1828,7 +1818,7 @@ impl<'a> BlockingMessagesResource<'a> {
     /// request/response fails.
     pub fn list_page_uri(self, next_page_uri: &str) -> Result<TwilioMessagePage, TwilioError> {
         request_span(
-            &self.account.client.config.rest_base_url,
+            &self.account.client.config.rest,
             "messages.list_page_uri",
             "GET",
         )
@@ -1928,12 +1918,7 @@ impl<'a> BlockingMessageResource<'a> {
     /// Returns [`TwilioError`] for transport failures, non-2xx API responses,
     /// or malformed JSON responses.
     pub fn fetch(self) -> Result<TwilioMessage, TwilioError> {
-        request_span(
-            &self.account.client.config.rest_base_url,
-            "message.fetch",
-            "GET",
-        )
-        .in_scope(|| {
+        request_span(&self.account.client.config.rest, "message.fetch", "GET").in_scope(|| {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
                 self.account.creds.auth_token(),
@@ -1952,12 +1937,7 @@ impl<'a> BlockingMessageResource<'a> {
     /// Returns [`TwilioError`] for invalid requests, transport failures,
     /// non-2xx API responses, or malformed JSON responses.
     pub fn update(self, request: UpdateMessageRequest<'a>) -> Result<TwilioMessage, TwilioError> {
-        request_span(
-            &self.account.client.config.rest_base_url,
-            "message.update",
-            "POST",
-        )
-        .in_scope(|| {
+        request_span(&self.account.client.config.rest, "message.update", "POST").in_scope(|| {
             request.validate()?;
             let sensitive_values = request.sensitive_values(self.account.creds, self.sid);
             let spec = self
@@ -1974,12 +1954,7 @@ impl<'a> BlockingMessageResource<'a> {
     ///
     /// Returns [`TwilioError`] for transport failures or non-2xx API responses.
     pub fn delete(self) -> Result<(), TwilioError> {
-        request_span(
-            &self.account.client.config.rest_base_url,
-            "message.delete",
-            "DELETE",
-        )
-        .in_scope(|| {
+        request_span(&self.account.client.config.rest, "message.delete", "DELETE").in_scope(|| {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
                 self.account.creds.auth_token(),
@@ -2042,7 +2017,7 @@ impl<'a> BlockingMessageMediaResource<'a> {
     /// or malformed JSON responses.
     pub fn fetch(self, media_sid: &'a str) -> Result<TwilioMedia, TwilioError> {
         request_span(
-            &self.message.account.client.config.rest_base_url,
+            &self.message.account.client.config.rest,
             "message.media.fetch",
             "GET",
         )
@@ -2064,7 +2039,7 @@ impl<'a> BlockingMessageMediaResource<'a> {
     /// Returns [`TwilioError`] for transport failures or non-2xx API responses.
     pub fn download(self, media_sid: &'a str) -> Result<TwilioMediaContent, TwilioError> {
         request_span(
-            &self.message.account.client.config.rest_base_url,
+            &self.message.account.client.config.rest,
             "message.media.download",
             "GET",
         )
@@ -2096,7 +2071,7 @@ impl<'a> BlockingMessageMediaResource<'a> {
     /// metadata.
     pub fn list(self, request: ListMediaRequest<'a>) -> Result<TwilioMediaPage, TwilioError> {
         request_span(
-            &self.message.account.client.config.rest_base_url,
+            &self.message.account.client.config.rest,
             "message.media.list",
             "GET",
         )
@@ -2136,7 +2111,7 @@ impl<'a> BlockingMessageMediaResource<'a> {
     /// request/response fails.
     pub fn list_page_uri(self, next_page_uri: &str) -> Result<TwilioMediaPage, TwilioError> {
         request_span(
-            &self.message.account.client.config.rest_base_url,
+            &self.message.account.client.config.rest,
             "message.media.list_page_uri",
             "GET",
         )
@@ -2175,7 +2150,7 @@ impl<'a> BlockingMessageMediaResource<'a> {
     /// Returns [`TwilioError`] for transport failures or non-2xx API responses.
     pub fn delete(self, media_sid: &'a str) -> Result<(), TwilioError> {
         request_span(
-            &self.message.account.client.config.rest_base_url,
+            &self.message.account.client.config.rest,
             "message.media.delete",
             "DELETE",
         )
@@ -2301,7 +2276,7 @@ impl BlockingMessageFeedbackResource<'_> {
         request: CreateMessageFeedbackRequest,
     ) -> Result<TwilioMessageFeedback, TwilioError> {
         request_span(
-            &self.message.account.client.config.rest_base_url,
+            &self.message.account.client.config.rest,
             "message.feedback.create",
             "POST",
         )

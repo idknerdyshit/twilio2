@@ -9,8 +9,8 @@ use crate::common::{
     RequestOptions, RequestSpec, RequestTarget, ResponseMeta, RetryPolicy, TwilioClientConfig,
     TwilioConfig, TwilioCreds, TwilioError, api_error_from_body, api_error_from_body_read_error,
     attempt_error, attempt_response, attempt_span, decode_json_response, endpoint_url_from_base,
-    legacy_page_uri_url_from_base, owned_sensitive_values, read_limited_response_body,
-    transport_error, v1_page_url_from_base,
+    legacy_page_uri_url_from_base, owned_sensitive_values, pricing_page_url_from_base,
+    read_limited_response_body, transport_error, v1_page_url_from_base,
 };
 use crate::deactivations::DeactivationsResource;
 #[cfg(feature = "sensitive-diagnostics")]
@@ -19,6 +19,7 @@ use crate::diagnostics::{
     SensitiveResponseSnapshot, SensitiveTransportErrorSnapshot, SensitiveTransportErrorStage,
 };
 use crate::messages::{MessageResource, MessagesResource};
+use crate::pricing::PricingResource;
 use crate::services::{ServiceResource, ServicesResource};
 use crate::short_codes::{AccountShortCodeResource, AccountShortCodesResource};
 use crate::tollfree_verifications::{TollfreeVerificationResource, TollfreeVerificationsResource};
@@ -300,11 +301,15 @@ impl TwilioClient {
     }
 
     pub(crate) fn rest_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
-        endpoint_url_from_base(&self.config.rest_base_url, segments)
+        endpoint_url_from_base(&self.config.rest, segments)
     }
 
     pub(crate) fn messaging_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
-        endpoint_url_from_base(&self.config.messaging_base_url, segments)
+        endpoint_url_from_base(&self.config.messaging, segments)
+    }
+
+    pub(crate) fn pricing_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
+        endpoint_url_from_base(&self.config.pricing, segments)
     }
 
     pub(crate) fn legacy_page_url(
@@ -313,7 +318,7 @@ impl TwilioClient {
         account_sid: &str,
         resource: crate::common::LegacyPageResource<'_>,
     ) -> Result<Url, TwilioError> {
-        legacy_page_uri_url_from_base(&self.config.rest_base_url, page_uri, account_sid, resource)
+        legacy_page_uri_url_from_base(&self.config.rest, page_uri, account_sid, resource)
     }
 
     pub(crate) fn v1_page_url(
@@ -321,7 +326,15 @@ impl TwilioClient {
         page_url: &str,
         resource: crate::common::V1PageResource<'_>,
     ) -> Result<Url, TwilioError> {
-        v1_page_url_from_base(&self.config.messaging_base_url, page_url, resource)
+        v1_page_url_from_base(&self.config.messaging, page_url, resource)
+    }
+
+    pub(crate) fn pricing_page_url(
+        &self,
+        page_url: &str,
+        resource: crate::common::PricingPageResource,
+    ) -> Result<Url, TwilioError> {
+        pricing_page_url_from_base(&self.config.pricing, page_url, resource)
     }
 
     pub(crate) fn url_for_spec(
@@ -335,10 +348,9 @@ impl TwilioClient {
                     options
                         .base_url_for(spec.family)?
                         .unwrap_or_else(|| match spec.family {
-                            crate::common::ApiFamily::Rest => self.config.rest_base_url.clone(),
-                            crate::common::ApiFamily::Messaging => {
-                                self.config.messaging_base_url.clone()
-                            }
+                            crate::common::ApiFamily::Rest => self.config.rest.clone(),
+                            crate::common::ApiFamily::Messaging => self.config.messaging.clone(),
+                            crate::common::ApiFamily::Pricing => self.config.pricing.clone(),
                         });
                 let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
                 endpoint_url_from_base(&base, &refs)?
@@ -374,6 +386,7 @@ impl TwilioClient {
         if spec.is_continuation()
             && (options.rest_base_url.is_some()
                 || options.messaging_base_url.is_some()
+                || options.pricing_base_url.is_some()
                 || !options.query.is_empty())
         {
             return Err(RawAttemptError {
@@ -717,6 +730,12 @@ impl<'a> TwilioAccount<'a> {
     #[must_use]
     pub fn tollfree_verification(self, sid: &'a str) -> TollfreeVerificationResource<'a> {
         TollfreeVerificationResource::new(self, sid)
+    }
+
+    /// Pricing v1 resources.
+    #[must_use]
+    pub fn pricing(self) -> PricingResource<'a> {
+        PricingResource::new(self)
     }
 
     /// Execute a custom Twilio operation and decode its response.

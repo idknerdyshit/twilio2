@@ -8,7 +8,7 @@
 //!
 //! The crate covers the legacy Messages and account-level `ShortCodes` REST APIs,
 //! Messaging v1 Services and sender subresources, Deactivations, and Toll-free
-//! Verifications.
+//! Verifications, plus Pricing v1 Messaging Countries.
 //!
 //! # Examples
 //!
@@ -177,7 +177,8 @@
 //! # fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let config = TwilioClientConfig::new()
 //!     .rest_base_url("https://proxy.example.com/twilio-rest")
-//!     .messaging_base_url("https://proxy.example.com/twilio-messaging/v1");
+//!     .messaging_base_url("https://proxy.example.com/twilio-messaging/v1")
+//!     .pricing_base_url("https://proxy.example.com/twilio-pricing/v1");
 //! let client = TwilioClient::from_config_and_http_client(config, reqwest::Client::new())?;
 //! # let _ = client;
 //! # Ok(())
@@ -207,6 +208,7 @@ mod deactivations;
 #[cfg(feature = "sensitive-diagnostics")]
 mod diagnostics;
 mod messages;
+mod pricing;
 mod secret;
 mod services;
 mod short_codes;
@@ -221,10 +223,10 @@ pub use common::BlockingTwilioPaginator;
 #[cfg(feature = "async")]
 pub use common::TwilioPaginator;
 pub use common::{
-    ApiFamily, ApiResponse, DEFAULT_MESSAGING_BASE_URL, DEFAULT_PAGE_SIZE, DEFAULT_REST_BASE_URL,
-    Operation, RawResponse, RequestOptions, RequestSpec, ResponseMeta, RetryPolicy,
-    TwilioClientConfig, TwilioConfig, TwilioCreds, TwilioError, TwilioMediaContent, V1PageMeta,
-    decode_json_response,
+    ApiFamily, ApiResponse, DEFAULT_MESSAGING_BASE_URL, DEFAULT_PAGE_SIZE,
+    DEFAULT_PRICING_BASE_URL, DEFAULT_REST_BASE_URL, Operation, RawResponse, RequestOptions,
+    RequestSpec, ResponseMeta, RetryPolicy, TwilioClientConfig, TwilioConfig, TwilioCreds,
+    TwilioError, TwilioMediaContent, V1PageMeta, decode_json_response,
 };
 #[cfg(feature = "sync")]
 pub use deactivations::BlockingDeactivationsResource;
@@ -252,6 +254,18 @@ pub use messages::{
 pub use messages::{
     MessageFeedbackResource, MessageMediaResource, MessageResource, MessagesResource,
 };
+#[cfg(feature = "sync")]
+pub use pricing::{
+    BlockingPricingMessagingCountriesResource, BlockingPricingMessagingResource,
+    BlockingPricingResource,
+};
+pub use pricing::{
+    ListPricingMessagingCountriesRequest, TwilioInboundSmsPrice, TwilioOutboundSmsPrice,
+    TwilioPricingMessaging, TwilioPricingMessagingCountry, TwilioPricingMessagingCountryPage,
+    TwilioPricingMessagingCountrySummary, TwilioSmsPrice,
+};
+#[cfg(feature = "async")]
+pub use pricing::{PricingMessagingCountriesResource, PricingMessagingResource, PricingResource};
 pub use secret::Secret;
 #[cfg(feature = "sync")]
 pub use services::{

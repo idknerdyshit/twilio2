@@ -1413,7 +1413,7 @@ impl<'a> TollfreeVerificationsResource<'a> {
             Ok(parsed.into_verification())
         }
         .instrument(request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "tollfree_verifications.create",
             "POST",
         ))
@@ -1446,7 +1446,7 @@ impl<'a> TollfreeVerificationsResource<'a> {
             self.read_page(&raw.output, &sensitive_values, Some(&url))
         }
         .instrument(request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "tollfree_verifications.list",
             "GET",
         ))
@@ -1482,7 +1482,7 @@ impl<'a> TollfreeVerificationsResource<'a> {
             self.read_page(&raw.output, &sensitive_values, Some(&url))
         }
         .instrument(request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "tollfree_verifications.list_page_url",
             "GET",
         ))
@@ -1582,7 +1582,7 @@ impl<'a> TollfreeVerificationResource<'a> {
             Ok(parsed.into_verification())
         }
         .instrument(request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "tollfree_verification.fetch",
             "GET",
         ))
@@ -1610,7 +1610,7 @@ impl<'a> TollfreeVerificationResource<'a> {
             Ok(parsed.into_verification())
         }
         .instrument(request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "tollfree_verification.update",
             "POST",
         ))
@@ -1629,7 +1629,7 @@ impl<'a> TollfreeVerificationResource<'a> {
             self.account.send_spec_empty(spec, &sensitive_values).await
         }
         .instrument(request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "tollfree_verification.delete",
             "DELETE",
         ))
@@ -1688,7 +1688,7 @@ impl<'a> BlockingTollfreeVerificationsResource<'a> {
         request: CreateTollfreeVerificationRequest<'a>,
     ) -> Result<TwilioTollfreeVerification, TwilioError> {
         request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "tollfree_verifications.create",
             "POST",
         )
@@ -1720,7 +1720,7 @@ impl<'a> BlockingTollfreeVerificationsResource<'a> {
         request: ListTollfreeVerificationsRequest<'a>,
     ) -> Result<TwilioTollfreeVerificationPage, TwilioError> {
         request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "tollfree_verifications.list",
             "GET",
         )
@@ -1752,7 +1752,7 @@ impl<'a> BlockingTollfreeVerificationsResource<'a> {
         next_page_url: &str,
     ) -> Result<TwilioTollfreeVerificationPage, TwilioError> {
         request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "tollfree_verifications.list_page_url",
             "GET",
         )
@@ -1855,7 +1855,7 @@ impl<'a> BlockingTollfreeVerificationResource<'a> {
     /// or malformed JSON responses.
     pub fn fetch(self) -> Result<TwilioTollfreeVerification, TwilioError> {
         request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "tollfree_verification.fetch",
             "GET",
         )
@@ -1879,7 +1879,7 @@ impl<'a> BlockingTollfreeVerificationResource<'a> {
         request: UpdateTollfreeVerificationRequest<'a>,
     ) -> Result<TwilioTollfreeVerification, TwilioError> {
         request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "tollfree_verification.update",
             "POST",
         )
@@ -1902,7 +1902,7 @@ impl<'a> BlockingTollfreeVerificationResource<'a> {
     /// Returns [`TwilioError`] for transport failures or non-2xx API responses.
     pub fn delete(self) -> Result<(), TwilioError> {
         request_span(
-            &self.account.client.config.messaging_base_url,
+            &self.account.client.config.messaging,
             "tollfree_verification.delete",
             "DELETE",
         )

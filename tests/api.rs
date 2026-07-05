@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use rcgen::CertifiedKey;
 use reqwest::Method;
+use rust_decimal::Decimal;
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -18,18 +19,21 @@ use twilio2::{
     CreateMessageRequest, CreateServicePhoneNumberRequest, CreateServiceRequest,
     CreateServiceShortCodeRequest, CreateTollfreeVerificationRequest, FetchDeactivationsRequest,
     HttpMethod, ListAccountShortCodesRequest, ListDestinationAlphaSendersRequest, ListMediaRequest,
-    ListMessagesRequest, ListServiceSubresourcesRequest, ListServicesRequest,
-    ListTollfreeVerificationsRequest, MessageFeedbackOutcome, Operation, RawResponse,
-    RequestOptions, RequestSpec, RetryPolicy, RiskCheck, ScanMessageContent, ScheduleType,
-    ServiceUsecase, TollfreeBusinessRegistrationAuthority, TollfreeBusinessType,
+    ListMessagesRequest, ListPricingMessagingCountriesRequest, ListServiceSubresourcesRequest,
+    ListServicesRequest, ListTollfreeVerificationsRequest, MessageFeedbackOutcome, Operation,
+    RawResponse, RequestOptions, RequestSpec, RetryPolicy, RiskCheck, ScanMessageContent,
+    ScheduleType, ServiceUsecase, TollfreeBusinessRegistrationAuthority, TollfreeBusinessType,
     TollfreeMessageVolume, TollfreeOptInType, TollfreeUseCaseCategory, TollfreeVerificationStatus,
     TollfreeVettingProvider, TrafficType, TwilioAccountShortCode, TwilioAccountShortCodePage,
     TwilioAlphaSender, TwilioAlphaSenderPage, TwilioChannelSender, TwilioChannelSenderPage,
     TwilioClient, TwilioClientConfig, TwilioConfig, TwilioCreds, TwilioDeactivation,
-    TwilioDestinationAlphaSender, TwilioDestinationAlphaSenderPage, TwilioError, TwilioMedia,
-    TwilioMediaPage, TwilioMessage, TwilioMessageFeedback, TwilioMessagePage, TwilioServicePage,
-    TwilioServicePhoneNumber, TwilioServicePhoneNumberPage, TwilioServiceShortCode,
-    TwilioServiceShortCodePage, TwilioTollfreeVerification, TwilioTollfreeVerificationPage,
+    TwilioDestinationAlphaSender, TwilioDestinationAlphaSenderPage, TwilioError,
+    TwilioInboundSmsPrice, TwilioMedia, TwilioMediaPage, TwilioMessage, TwilioMessageFeedback,
+    TwilioMessagePage, TwilioOutboundSmsPrice, TwilioPricingMessaging,
+    TwilioPricingMessagingCountry, TwilioPricingMessagingCountryPage,
+    TwilioPricingMessagingCountrySummary, TwilioServicePage, TwilioServicePhoneNumber,
+    TwilioServicePhoneNumberPage, TwilioServiceShortCode, TwilioServiceShortCodePage,
+    TwilioSmsPrice, TwilioTollfreeVerification, TwilioTollfreeVerificationPage,
     UpdateAccountShortCodeRequest, UpdateMessageRequest, UpdateServiceRequest,
     UpdateTollfreeVerificationRequest, V1PageMeta,
 };
@@ -311,7 +315,8 @@ fn client_for(server: &HttpsMockServer) -> TwilioClient {
         test_http_client(),
         TwilioConfig::new()
             .rest_base_url(&server.base_url)
-            .messaging_base_url(format!("{}/v1", server.base_url)),
+            .messaging_base_url(format!("{}/v1", server.base_url))
+            .pricing_base_url(format!("{}/v1", server.base_url)),
     )
     .unwrap()
 }
@@ -366,11 +371,201 @@ fn assert_debug_redacts(value: &impl std::fmt::Debug, leaked: &[&str]) {
     );
 }
 
+#[tokio::test]
+async fn pricing_messaging_fetch_and_country_detail_decode_prices() {
+    let server = HttpsMockServer::start(vec![
+        MockResponse::json(pricing_messaging_json()),
+        MockResponse::json(pricing_country_detail_json("US")),
+    ])
+    .await;
+    let client = client_for(&server);
+    let account = client.account(test_creds());
+
+    let messaging: TwilioPricingMessaging = account.pricing().messaging().fetch().await.unwrap();
+    assert_eq!(messaging.name.as_deref(), Some("Messaging"));
+    assert!(messaging.links.as_ref().unwrap().contains_key("countries"));
+    assert_debug_redacts(&messaging, &["pricing.twilio.com", "Countries"]);
+
+    let country: TwilioPricingMessagingCountry = account
+        .pricing()
+        .messaging()
+        .countries()
+        .fetch("us")
+        .await
+        .unwrap();
+    assert_eq!(country.country.as_deref(), Some("United States"));
+    assert_eq!(country.iso_country.as_deref(), Some("US"));
+    assert_eq!(country.price_unit.as_deref(), Some("USD"));
+    let inbound: &TwilioInboundSmsPrice = &country.inbound_sms_prices[0];
+    assert_eq!(inbound.base_price, Some(Decimal::new(5, 2)));
+    assert_eq!(inbound.current_price, Some(Decimal::new(4, 2)));
+    let outbound: &TwilioOutboundSmsPrice = &country.outbound_sms_prices[0];
+    assert_eq!(outbound.carrier.as_deref(), Some("att"));
+    let sms_price: &TwilioSmsPrice = &outbound.prices[0];
+    assert_eq!(sms_price.base_price, Some(Decimal::new(5, 2)));
+    assert_eq!(sms_price.current_price, Some(Decimal::new(45, 3)));
+    assert_debug_redacts(&country, &["pricing.twilio.com"]);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].path, "/v1/Messaging");
+    assert_eq!(requests[1].path, "/v1/Messaging/Countries/US");
+    assert_basic_auth(&requests[0]);
+    assert_basic_auth(&requests[1]);
+}
+
+#[tokio::test]
+async fn pricing_messaging_countries_list_paginates_and_list_all() {
+    let next_page_url = "__BASE_URL__/v1/Messaging/Countries?PageSize=2&Page=1&PageToken=next";
+    let server = HttpsMockServer::start(vec![
+        MockResponse::json(pricing_country_page_json(
+            &[pricing_country_summary_json("United States", "US")],
+            Some(next_page_url),
+            0,
+            2,
+        )),
+        MockResponse::json(pricing_country_page_json(
+            &[pricing_country_summary_json("Canada", "CA")],
+            None,
+            1,
+            2,
+        )),
+        MockResponse::json(pricing_country_page_json(
+            &[pricing_country_summary_json("United States", "US")],
+            Some(next_page_url),
+            0,
+            2,
+        )),
+        MockResponse::json(pricing_country_page_json(
+            &[pricing_country_summary_json("Canada", "CA")],
+            None,
+            1,
+            2,
+        )),
+    ])
+    .await;
+    let client = client_for(&server);
+    let countries = client
+        .account(test_creds())
+        .pricing()
+        .messaging()
+        .countries();
+
+    let first: TwilioPricingMessagingCountryPage = countries
+        .list(
+            ListPricingMessagingCountriesRequest::new()
+                .page_size(2)
+                .page(0),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.meta.key.as_deref(), Some("countries"));
+    let first_country: &TwilioPricingMessagingCountrySummary = &first.countries[0];
+    assert_eq!(first_country.iso_country.as_deref(), Some("US"));
+    let next = first.meta.next_page_url.as_deref().unwrap();
+    let second = countries.list_page_url(next).await.unwrap();
+    assert_eq!(second.countries[0].iso_country.as_deref(), Some("CA"));
+
+    let all = countries
+        .list_all_with(ListPricingMessagingCountriesRequest::new().page_size(2))
+        .collect_all()
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].iso_country.as_deref(), Some("US"));
+    assert_eq!(all[1].iso_country.as_deref(), Some("CA"));
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests[0].path,
+        "/v1/Messaging/Countries?PageSize=2&Page=0"
+    );
+    assert_eq!(
+        requests[1].path,
+        "/v1/Messaging/Countries?PageSize=2&Page=1&PageToken=next"
+    );
+    assert_eq!(requests[2].path, "/v1/Messaging/Countries?PageSize=2");
+    assert_eq!(
+        requests[3].path,
+        "/v1/Messaging/Countries?PageSize=2&Page=1&PageToken=next"
+    );
+}
+
+#[tokio::test]
+async fn pricing_messaging_countries_validate_requests_and_page_urls() {
+    let server = HttpsMockServer::start(vec![MockResponse::json(pricing_country_page_json(
+        &[pricing_country_summary_json("United States", "US")],
+        Some("__BASE_URL__/v1/Messaging/Countries?PageSize=3&Page=1&PageToken=next"),
+        0,
+        2,
+    ))])
+    .await;
+    let client = client_for(&server);
+    let countries = client
+        .account(test_creds())
+        .pricing()
+        .messaging()
+        .countries();
+
+    let err = countries
+        .list(ListPricingMessagingCountriesRequest::new().page_size(0))
+        .await
+        .unwrap_err();
+    assert_invalid_request(err, "PageSize");
+
+    let err = countries.fetch("usa").await.unwrap_err();
+    assert_invalid_request(err, "IsoCountry");
+
+    let err = countries
+        .list_page_url("https://example.test/v1/Messaging/Countries?Page=1")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, TwilioError::InvalidResponseMetadata(_)));
+
+    let err = countries
+        .list(ListPricingMessagingCountriesRequest::new().page_size(2))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, TwilioError::InvalidResponseMetadata(_)));
+
+    assert!(server.requests().len() == 1);
+}
+
+#[tokio::test]
+async fn pricing_continuation_api_errors_redact_page_url() {
+    let page_token = "pricing-cursor-secret";
+    let server = HttpsMockServer::start(vec![MockResponse::status_json(
+        400,
+        format!(
+            r#"{{"message":"bad cursor __BASE_URL__/v1/Messaging/Countries?PageSize=2&Page=1&PageToken={page_token}"}}"#
+        ),
+    )])
+    .await;
+    let next_page_url = format!(
+        "{}/v1/Messaging/Countries?PageSize=2&Page=1&PageToken={page_token}",
+        server.base_url
+    );
+
+    let err = client_for(&server)
+        .account(test_creds())
+        .pricing()
+        .messaging()
+        .countries()
+        .list_page_url(&next_page_url)
+        .await
+        .unwrap_err();
+
+    assert_api_error_redacted(err, 400, &[&next_page_url, page_token]);
+}
+
 #[test]
 fn constructors_config_and_debug_are_ergonomic_and_redacted() {
     let config = TwilioClientConfig::new()
         .rest_base_url("https://proxy.example.test/rest")
         .messaging_base_url("https://proxy.example.test/messaging/v1")
+        .pricing_base_url("https://proxy.example.test/pricing/v1")
         .timeout(Duration::from_secs(7))
         .user_agent("test-agent/1.0");
 
@@ -382,6 +577,10 @@ fn constructors_config_and_debug_are_ergonomic_and_redacted() {
         retained.messaging_base_url,
         "https://proxy.example.test/messaging/v1"
     );
+    assert_eq!(
+        retained.pricing_base_url,
+        "https://proxy.example.test/pricing/v1"
+    );
     assert_debug_redacts(&config, &["proxy.example.test"]);
     assert_debug_redacts(&retained, &["proxy.example.test"]);
 
@@ -389,6 +588,10 @@ fn constructors_config_and_debug_are_ergonomic_and_redacted() {
     assert_eq!(
         default.config().rest_base_url,
         twilio2::DEFAULT_REST_BASE_URL
+    );
+    assert_eq!(
+        default.config().pricing_base_url,
+        twilio2::DEFAULT_PRICING_BASE_URL
     );
 }
 
@@ -2595,6 +2798,73 @@ fn tollfree_verification_page_json(
             "verifications": [{verifications}]
         }}"#,
         verifications = verifications.join(",")
+    )
+}
+
+fn pricing_messaging_json() -> String {
+    r#"{
+        "name":"Messaging",
+        "url":"https://pricing.twilio.com/v1/Messaging",
+        "links":{"countries":"https://pricing.twilio.com/v1/Messaging/Countries"}
+    }"#
+    .to_owned()
+}
+
+fn pricing_country_summary_json(country: &str, iso_country: &str) -> String {
+    format!(
+        r#"{{
+            "country":"{country}",
+            "iso_country":"{iso_country}",
+            "url":"https://pricing.twilio.com/v1/Messaging/Countries/{iso_country}"
+        }}"#
+    )
+}
+
+fn pricing_country_page_json(
+    countries: &[String],
+    next_page_url: Option<&str>,
+    page: u32,
+    page_size: u32,
+) -> String {
+    let countries = countries.join(",");
+    let next = next_page_url.map_or_else(|| "null".to_owned(), |value| format!(r#""{value}""#));
+    format!(
+        r#"{{
+            "countries":[{countries}],
+            "meta":{{
+                "first_page_url":"__BASE_URL__/v1/Messaging/Countries?PageSize={page_size}&Page=0",
+                "key":"countries",
+                "next_page_url":{next},
+                "page":{page},
+                "page_size":{page_size},
+                "previous_page_url":null,
+                "url":"__BASE_URL__/v1/Messaging/Countries?PageSize={page_size}&Page={page}"
+            }}
+        }}"#
+    )
+}
+
+fn pricing_country_detail_json(iso_country: &str) -> String {
+    format!(
+        r#"{{
+            "country":"United States",
+            "iso_country":"{iso_country}",
+            "inbound_sms_prices":[
+                {{"base_price":"0.05","current_price":0.04,"number_type":"mobile"}}
+            ],
+            "outbound_sms_prices":[
+                {{
+                    "carrier":"att",
+                    "mcc":"310",
+                    "mnc":"410",
+                    "prices":[
+                        {{"base_price":"0.05","current_price":0.045,"number_type":"mobile"}}
+                    ]
+                }}
+            ],
+            "price_unit":"USD",
+            "url":"https://pricing.twilio.com/v1/Messaging/Countries/{iso_country}"
+        }}"#
     )
 }
 

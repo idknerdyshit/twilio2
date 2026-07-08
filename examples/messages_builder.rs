@@ -19,15 +19,13 @@ async fn main() -> ExampleResult<()> {
     let client = client_for(&server)?;
     let account = client.account(creds());
 
-    let mut create = CreateMessageRequest::new("+15551234567");
-    create.from = Some("+15557654321");
-    create.body = Some("hello from twilio2");
-    create.status_callback = Some("https://example.test/message-status");
+    let create = CreateMessageRequest::new("+15551234567")
+        .from("+15557654321")
+        .body("hello from twilio2")
+        .status_callback("https://example.test/message-status");
 
     let created = account.messages().create(create).await?;
-    let mut list = ListMessagesRequest::new();
-    list.page_size = Some(1);
-    list.page = Some(0);
+    let list = ListMessagesRequest::new().page_size(1).page(0);
     let first_page = account.messages().list(list).await?;
     let next_page_uri = first_page
         .next_page_uri

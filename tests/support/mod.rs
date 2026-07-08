@@ -12,7 +12,7 @@ use tokio_rustls::TlsAcceptor;
 use twilio2::BlockingTwilioClient;
 #[cfg(feature = "async")]
 use twilio2::TwilioClient;
-use twilio2::{TwilioConfig, TwilioCreds};
+use twilio2::{TwilioAuth, TwilioConfig};
 
 #[derive(Clone)]
 pub struct MockResponse {
@@ -161,8 +161,8 @@ pub fn test_agent() -> ureq::Agent {
     ureq::Agent::new_with_config(builder.build())
 }
 
-pub fn test_creds() -> &'static TwilioCreds {
-    static CREDS: LazyLock<TwilioCreds> = LazyLock::new(|| TwilioCreds::new("AC123", "token"));
+pub fn test_creds() -> &'static TwilioAuth {
+    static CREDS: LazyLock<TwilioAuth> = LazyLock::new(|| TwilioAuth::auth_token("AC123", "token"));
     &CREDS
 }
 
@@ -181,6 +181,7 @@ pub fn twilio_config(base_url: &str) -> TwilioConfig {
         .rest_base_url(base_url)
         .messaging_base_url(format!("{base_url}/v1"))
         .pricing_base_url(format!("{base_url}/v1"))
+        .accounts_base_url(format!("{base_url}/v1"))
 }
 
 pub async fn unused_https_base_url() -> String {

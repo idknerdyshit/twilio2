@@ -7,7 +7,7 @@ use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
-use twilio2::{TwilioClient, TwilioConfig, TwilioCreds};
+use twilio2::{TwilioAuth, TwilioClient, TwilioConfig};
 
 pub(super) type ExampleResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -118,12 +118,13 @@ pub(super) fn client_for(server: &HttpsMockServer) -> ExampleResult<TwilioClient
         client,
         TwilioConfig::new()
             .rest_base_url(server.base_url())
-            .messaging_base_url(format!("{}/v1", server.base_url())),
+            .messaging_base_url(format!("{}/v1", server.base_url()))
+            .accounts_base_url(format!("{}/v1", server.base_url())),
     )?)
 }
 
-pub(super) fn creds() -> &'static TwilioCreds {
-    static CREDS: LazyLock<TwilioCreds> = LazyLock::new(|| TwilioCreds::new("AC123", "token"));
+pub(super) fn creds() -> &'static TwilioAuth {
+    static CREDS: LazyLock<TwilioAuth> = LazyLock::new(|| TwilioAuth::auth_token("AC123", "token"));
     &CREDS
 }
 

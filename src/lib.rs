@@ -1,14 +1,20 @@
 //! `twilio2` is a thin async and blocking client for Twilio Programmable Messaging.
 //!
-//! Account SID + Auth Token credentials are passed to account-scoped handles
-//! using HTTP basic auth and are never stored on [`TwilioClient`]. Request
-//! structs borrow caller-owned values for the same reason: the client should not
-//! retain auth tokens, phone numbers, callback URLs, sender IDs, or message
-//! bodies after a request completes.
+//! Account SID + Auth Token credentials, or Account SID + API Key SID/Secret
+//! credentials, are passed to account-scoped handles using HTTP basic auth and
+//! are never stored on [`TwilioClient`]. Request structs borrow caller-owned
+//! values for the same reason: the client should not retain auth tokens, phone
+//! numbers, callback URLs, sender IDs, consent records, Safe List numbers, A2P
+//! campaign text, or message bodies after a request completes.
 //!
-//! The crate covers the legacy Messages and account-level `ShortCodes` REST APIs,
-//! Messaging v1 Services and sender subresources, Deactivations, and Toll-free
-//! Verifications, plus Pricing v1 Messaging Countries.
+//! The crate covers the Programmable Messaging endpoints exposed through the
+//! legacy Messages and account-level `ShortCodes` REST APIs, Messaging v1
+//! Services and sender subresources, A2P 10DLC resources, Deactivations,
+//! Toll-free Verifications, Accounts v1 Messaging feature APIs, Compliance
+//! Toolkit message controls, and Pricing v1 Messaging Countries. Separate
+//! Twilio products such as `Content`, `Conversations`, `Verify`, `WhatsApp`
+//! Business Platform, and `RCS` product APIs are not included unless exposed through
+//! Programmable Messaging endpoints or parameters.
 //!
 //! # Examples
 //!
@@ -16,13 +22,13 @@
 //!
 //! ```rust,ignore
 //! use twilio2::{
-//!     CreateMessageRequest, ListMessagesRequest, TwilioClient, TwilioCreds,
+//!     CreateMessageRequest, ListMessagesRequest, TwilioClient, TwilioAuth,
 //!     UpdateMessageRequest,
 //! };
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = TwilioClient::from_config(Default::default())?;
-//! let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
+//! let creds = TwilioAuth::auth_token("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 //!
 //! let request = CreateMessageRequest::new("+15551234567")
 //!     .from("+15557654321")
@@ -54,10 +60,10 @@
 //! ```rust,no_run
 //! # #[cfg(feature = "sync")]
 //! # fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! use twilio2::{BlockingTwilioClient, CreateMessageRequest, TwilioCreds};
+//! use twilio2::{BlockingTwilioClient, CreateMessageRequest, TwilioAuth};
 //!
 //! let client = BlockingTwilioClient::from_config(Default::default())?;
-//! let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
+//! let creds = TwilioAuth::auth_token("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 //! let account = client.account(&creds);
 //!
 //! let created = account
@@ -79,12 +85,12 @@
 //! ```rust,ignore
 //! use twilio2::{
 //!     CreateServiceRequest, HttpMethod, ListServicesRequest, TwilioClient,
-//!     TwilioCreds, UpdateServiceRequest,
+//!     TwilioAuth, UpdateServiceRequest,
 //! };
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = TwilioClient::from_config(Default::default())?;
-//! let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
+//! let creds = TwilioAuth::auth_token("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 //! let account = client.account(&creds);
 //!
 //! let service = account
@@ -127,12 +133,12 @@
 //! use twilio2::{
 //!     CreateDestinationAlphaSenderRequest, CreateServicePhoneNumberRequest,
 //!     ListDestinationAlphaSendersRequest, ListServiceSubresourcesRequest,
-//!     TwilioClient, TwilioCreds,
+//!     TwilioClient, TwilioAuth,
 //! };
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = TwilioClient::from_config(Default::default())?;
-//! let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
+//! let creds = TwilioAuth::auth_token("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 //! let service = client
 //!     .account(&creds)
 //!     .service("MGxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
@@ -178,7 +184,8 @@
 //! let config = TwilioClientConfig::new()
 //!     .rest_base_url("https://proxy.example.com/twilio-rest")
 //!     .messaging_base_url("https://proxy.example.com/twilio-messaging/v1")
-//!     .pricing_base_url("https://proxy.example.com/twilio-pricing/v1");
+//!     .pricing_base_url("https://proxy.example.com/twilio-pricing/v1")
+//!     .accounts_base_url("https://proxy.example.com/twilio-accounts/v1");
 //! let client = TwilioClient::from_config_and_http_client(config, reqwest::Client::new())?;
 //! # let _ = client;
 //! # Ok(())
@@ -199,6 +206,7 @@ compile_error!(
     "twilio2 requires a transport API. Enable default features, or enable one of: async, sync."
 );
 
+mod a2p;
 #[cfg(feature = "sync")]
 mod blocking_client;
 #[cfg(feature = "async")]
@@ -208,12 +216,32 @@ mod deactivations;
 #[cfg(feature = "sensitive-diagnostics")]
 mod diagnostics;
 mod messages;
+mod messaging_features;
 mod pricing;
 mod secret;
 mod services;
 mod short_codes;
 mod tollfree_verifications;
 
+#[cfg(feature = "async")]
+pub use a2p::{
+    A2PBrandRegistrationResource, A2PBrandRegistrationsResource, A2PBrandVettingsResource,
+    ServiceUsa2pResource, ServiceUsa2pUsecasesResource,
+};
+pub use a2p::{
+    A2PBrandType, A2PUsecase, A2PVettingProvider, CreateA2PBrandRegistrationRequest,
+    CreateA2PBrandVettingRequest, CreateUsa2pRequest, FetchUsa2pUsecasesRequest,
+    ListA2PBrandRegistrationsRequest, ListA2PBrandVettingsRequest, ListUsa2pRequest,
+    TwilioA2PBrandRegistration, TwilioA2PBrandRegistrationPage, TwilioA2PBrandVetting,
+    TwilioA2PBrandVettingPage, TwilioUsa2p, TwilioUsa2pPage, TwilioUsa2pUsecase,
+    TwilioUsa2pUsecases,
+};
+#[cfg(feature = "sync")]
+pub use a2p::{
+    BlockingA2PBrandRegistrationResource, BlockingA2PBrandRegistrationsResource,
+    BlockingA2PBrandVettingsResource, BlockingServiceUsa2pResource,
+    BlockingServiceUsa2pUsecasesResource,
+};
 #[cfg(feature = "sync")]
 pub use blocking_client::{BlockingTwilioAccount, BlockingTwilioClient};
 #[cfg(feature = "async")]
@@ -223,10 +251,10 @@ pub use common::BlockingTwilioPaginator;
 #[cfg(feature = "async")]
 pub use common::TwilioPaginator;
 pub use common::{
-    ApiFamily, ApiResponse, DEFAULT_MESSAGING_BASE_URL, DEFAULT_PAGE_SIZE,
-    DEFAULT_PRICING_BASE_URL, DEFAULT_REST_BASE_URL, Operation, RawResponse, RequestOptions,
-    RequestSpec, ResponseMeta, RetryPolicy, TwilioClientConfig, TwilioConfig, TwilioCreds,
-    TwilioError, TwilioMediaContent, V1PageMeta, decode_json_response,
+    ApiFamily, ApiResponse, DEFAULT_ACCOUNTS_BASE_URL, DEFAULT_MESSAGING_BASE_URL,
+    DEFAULT_PAGE_SIZE, DEFAULT_PRICING_BASE_URL, DEFAULT_REST_BASE_URL, Operation, RawResponse,
+    RequestOptions, RequestSpec, ResponseMeta, RetryPolicy, TwilioAuth, TwilioClientConfig,
+    TwilioConfig, TwilioError, TwilioMediaContent, V1PageMeta, decode_json_response,
 };
 #[cfg(feature = "sync")]
 pub use deactivations::BlockingDeactivationsResource;
@@ -241,8 +269,8 @@ pub use diagnostics::{
 };
 pub use messages::{
     AddressRetention, ContentRetention, CreateMessageFeedbackRequest, CreateMessageRequest,
-    ListMediaRequest, ListMessagesRequest, MessageFeedbackOutcome, RiskCheck, ScheduleType,
-    TrafficType, TwilioMedia, TwilioMediaPage, TwilioMessage, TwilioMessageFeedback,
+    ListMediaRequest, ListMessagesRequest, MessageFeedbackOutcome, MessageIntent, RiskCheck,
+    ScheduleType, TrafficType, TwilioMedia, TwilioMediaPage, TwilioMessage, TwilioMessageFeedback,
     TwilioMessagePage, UpdateMessageRequest, UpdateMessageStatus,
 };
 #[cfg(feature = "sync")]
@@ -254,6 +282,17 @@ pub use messages::{
 pub use messages::{
     MessageFeedbackResource, MessageMediaResource, MessageResource, MessagesResource,
 };
+#[cfg(feature = "sync")]
+pub use messaging_features::{
+    BlockingConsentsResource, BlockingContactsResource, BlockingGlobalSafeListResource,
+};
+pub use messaging_features::{
+    BulkConsentsRequest, BulkContactsRequest, ConsentItem, ConsentSource, ConsentStatus,
+    ContactItem, SafeListNumberRequest, TwilioBulkConsentResult, TwilioBulkConsentsResponse,
+    TwilioBulkContactResult, TwilioBulkContactsResponse, TwilioSafeListNumber,
+};
+#[cfg(feature = "async")]
+pub use messaging_features::{ConsentsResource, ContactsResource, GlobalSafeListResource};
 #[cfg(feature = "sync")]
 pub use pricing::{
     BlockingPricingMessagingCountriesResource, BlockingPricingMessagingResource,

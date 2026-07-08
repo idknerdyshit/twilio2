@@ -37,6 +37,9 @@ pub const DEFAULT_MESSAGING_BASE_URL: &str = "https://messaging.twilio.com/v1";
 /// Default Twilio Pricing v1 API root, with no trailing slash.
 pub const DEFAULT_PRICING_BASE_URL: &str = "https://pricing.twilio.com/v1";
 
+/// Default Twilio Accounts v1 API root, with no trailing slash.
+pub const DEFAULT_ACCOUNTS_BASE_URL: &str = "https://accounts.twilio.com/v1";
+
 /// Default page size used by `*_all` paginator helpers.
 pub const DEFAULT_PAGE_SIZE: u32 = 50;
 
@@ -101,29 +104,57 @@ impl TwilioError {
     }
 }
 
-/// Credentials for one account-scoped API handle. Owned by the caller and never
+/// Authentication for one account-scoped API handle. Owned by the caller and never
 /// stored on [`crate::TwilioClient`].
 ///
-/// Pass `&TwilioCreds` to [`crate::TwilioClient::account`] or, with the `sync`
-/// feature, `BlockingTwilioClient::account`. The credential buffers are
+/// Pass `&TwilioAuth` to [`crate::TwilioClient::account`] or, with the `sync`
+/// feature, `BlockingTwilioClient::account`. The authentication buffers are
 /// redacted in [`Debug`](std::fmt::Debug) and the buffers owned by this value
 /// are zeroized when dropped. Caller-owned source strings and transport-created
 /// header copies are outside that guarantee.
 #[derive(Clone)]
-pub struct TwilioCreds {
+pub struct TwilioAuth {
     account_sid: Secret<String>,
-    auth_token: Secret<String>,
+    credential: TwilioAuthCredential,
 }
 
-impl TwilioCreds {
-    /// Create credentials from an account SID and auth token.
-    pub fn new(
+#[derive(Clone)]
+enum TwilioAuthCredential {
+    AuthToken {
+        auth_token: Secret<String>,
+    },
+    ApiKey {
+        api_key_sid: Secret<String>,
+        api_key_secret: Secret<String>,
+    },
+}
+
+impl TwilioAuth {
+    /// Create authentication from an Account SID and Auth Token.
+    pub fn auth_token(
         account_sid: impl Into<Secret<String>>,
         auth_token: impl Into<Secret<String>>,
     ) -> Self {
         Self {
             account_sid: account_sid.into(),
-            auth_token: auth_token.into(),
+            credential: TwilioAuthCredential::AuthToken {
+                auth_token: auth_token.into(),
+            },
+        }
+    }
+
+    /// Create authentication from an Account SID, API Key SID, and API Key Secret.
+    pub fn api_key(
+        account_sid: impl Into<Secret<String>>,
+        api_key_sid: impl Into<Secret<String>>,
+        api_key_secret: impl Into<Secret<String>>,
+    ) -> Self {
+        Self {
+            account_sid: account_sid.into(),
+            credential: TwilioAuthCredential::ApiKey {
+                api_key_sid: api_key_sid.into(),
+                api_key_secret: api_key_secret.into(),
+            },
         }
     }
 
@@ -131,45 +162,80 @@ impl TwilioCreds {
         self.account_sid.expose().as_str()
     }
 
-    pub(crate) fn auth_token(&self) -> &str {
-        self.auth_token.expose().as_str()
+    pub(crate) fn auth_username(&self) -> &str {
+        match &self.credential {
+            TwilioAuthCredential::AuthToken { .. } => self.account_sid(),
+            TwilioAuthCredential::ApiKey { api_key_sid, .. } => api_key_sid.expose().as_str(),
+        }
+    }
+
+    pub(crate) fn auth_secret(&self) -> &str {
+        match &self.credential {
+            TwilioAuthCredential::AuthToken { auth_token } => auth_token.expose().as_str(),
+            TwilioAuthCredential::ApiKey { api_key_secret, .. } => api_key_secret.expose().as_str(),
+        }
+    }
+
+    pub(crate) fn sensitive_values(&self) -> Vec<&str> {
+        let mut values = vec![self.account_sid(), self.auth_secret()];
+        if let TwilioAuthCredential::ApiKey { api_key_sid, .. } = &self.credential {
+            values.push(api_key_sid.expose().as_str());
+        }
+        values
     }
 
     #[cfg(any(feature = "async", feature = "sync"))]
     pub(crate) fn basic_auth_header(&self) -> Secret<String> {
-        let token = Zeroizing::new(format!("{}:{}", self.account_sid(), self.auth_token()));
+        let token = Zeroizing::new(format!("{}:{}", self.auth_username(), self.auth_secret()));
         let mut header = String::from("Basic ");
         base64::engine::general_purpose::STANDARD.encode_string(token.as_bytes(), &mut header);
         Secret::new(header)
     }
 }
 
-impl std::fmt::Debug for TwilioCreds {
+impl std::fmt::Debug for TwilioAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TwilioCreds")
-            .field("account_sid", &self.account_sid)
-            .field("auth_token", &self.auth_token)
-            .finish()
+        let mut debug = f.debug_struct("TwilioAuth");
+        debug.field("account_sid", &self.account_sid).field(
+            "credential_kind",
+            &match self.credential {
+                TwilioAuthCredential::AuthToken { .. } => "auth_token",
+                TwilioAuthCredential::ApiKey { .. } => "api_key",
+            },
+        );
+        match &self.credential {
+            TwilioAuthCredential::AuthToken { auth_token } => {
+                debug.field("auth_token", auth_token);
+            }
+            TwilioAuthCredential::ApiKey {
+                api_key_sid,
+                api_key_secret,
+            } => {
+                debug
+                    .field("api_key_sid", api_key_sid)
+                    .field("api_key_secret", api_key_secret);
+            }
+        }
+        debug.finish()
     }
 }
 
 /// Base URL configuration for Twilio API families used by this crate.
 #[derive(Clone, PartialEq, Eq)]
 pub struct TwilioConfig {
-    pub rest_base_url: String,
-    pub messaging_base_url: String,
-    pub pricing_base_url: String,
+    rest: String,
+    messaging: String,
+    pricing: String,
+    accounts: String,
 }
 
 impl fmt::Debug for TwilioConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TwilioConfig")
-            .field("rest_base_url", &redacted_str(&self.rest_base_url))
-            .field(
-                "messaging_base_url",
-                &redacted_str(&self.messaging_base_url),
-            )
-            .field("pricing_base_url", &redacted_str(&self.pricing_base_url))
+            .field("rest_base_url", &redacted_str(&self.rest))
+            .field("messaging_base_url", &redacted_str(&self.messaging))
+            .field("pricing_base_url", &redacted_str(&self.pricing))
+            .field("accounts_base_url", &redacted_str(&self.accounts))
             .finish()
     }
 }
@@ -177,9 +243,10 @@ impl fmt::Debug for TwilioConfig {
 impl Default for TwilioConfig {
     fn default() -> Self {
         Self {
-            rest_base_url: DEFAULT_REST_BASE_URL.to_owned(),
-            messaging_base_url: DEFAULT_MESSAGING_BASE_URL.to_owned(),
-            pricing_base_url: DEFAULT_PRICING_BASE_URL.to_owned(),
+            rest: DEFAULT_REST_BASE_URL.to_owned(),
+            messaging: DEFAULT_MESSAGING_BASE_URL.to_owned(),
+            pricing: DEFAULT_PRICING_BASE_URL.to_owned(),
+            accounts: DEFAULT_ACCOUNTS_BASE_URL.to_owned(),
         }
     }
 }
@@ -193,9 +260,10 @@ impl TwilioConfig {
 
     /// Construct base URL configuration from environment variables.
     ///
-    /// Reads `TWILIO_REST_BASE_URL`, `TWILIO_MESSAGING_BASE_URL`, and
-    /// `TWILIO_PRICING_BASE_URL` when they are present and non-empty. Account
-    /// credentials are intentionally not read here; pass a [`TwilioCreds`]
+    /// Reads `TWILIO_REST_BASE_URL`, `TWILIO_MESSAGING_BASE_URL`,
+    /// `TWILIO_PRICING_BASE_URL`, and `TWILIO_ACCOUNTS_BASE_URL` when they are
+    /// present and non-empty. Account credentials are intentionally not read here;
+    /// pass a [`TwilioAuth`]
     /// reference to [`crate::TwilioClient::account`].
     ///
     /// # Errors
@@ -208,6 +276,7 @@ impl TwilioConfig {
             env_var("TWILIO_REST_BASE_URL")?,
             env_var("TWILIO_MESSAGING_BASE_URL")?,
             env_var("TWILIO_PRICING_BASE_URL")?,
+            env_var("TWILIO_ACCOUNTS_BASE_URL")?,
         )
     }
 
@@ -215,6 +284,7 @@ impl TwilioConfig {
         rest_base_url: Option<String>,
         messaging_base_url: Option<String>,
         pricing_base_url: Option<String>,
+        accounts_base_url: Option<String>,
     ) -> Result<Self, TwilioError> {
         let mut config = Self::new();
         if let Some(rest_base_url) = non_empty_env(rest_base_url) {
@@ -229,28 +299,63 @@ impl TwilioConfig {
             normalize_base_url(&pricing_base_url).map_err(TwilioError::InvalidBaseUrl)?;
             config = config.pricing_base_url(pricing_base_url);
         }
+        if let Some(accounts_base_url) = non_empty_env(accounts_base_url) {
+            normalize_base_url(&accounts_base_url).map_err(TwilioError::InvalidBaseUrl)?;
+            config = config.accounts_base_url(accounts_base_url);
+        }
         Ok(config)
     }
 
     /// Set the Twilio 2010 REST API base URL.
     #[must_use]
     pub fn rest_base_url(mut self, value: impl Into<String>) -> Self {
-        self.rest_base_url = value.into();
+        self.rest = value.into();
         self
     }
 
     /// Set the Twilio Messaging v1 API base URL.
     #[must_use]
     pub fn messaging_base_url(mut self, value: impl Into<String>) -> Self {
-        self.messaging_base_url = value.into();
+        self.messaging = value.into();
         self
     }
 
     /// Set the Twilio Pricing v1 API base URL.
     #[must_use]
     pub fn pricing_base_url(mut self, value: impl Into<String>) -> Self {
-        self.pricing_base_url = value.into();
+        self.pricing = value.into();
         self
+    }
+
+    /// Set the Twilio Accounts v1 API base URL.
+    #[must_use]
+    pub fn accounts_base_url(mut self, value: impl Into<String>) -> Self {
+        self.accounts = value.into();
+        self
+    }
+
+    /// Return the normalized public REST API base URL string.
+    #[must_use]
+    pub fn rest_base_url_ref(&self) -> &str {
+        &self.rest
+    }
+
+    /// Return the normalized public Messaging API base URL string.
+    #[must_use]
+    pub fn messaging_base_url_ref(&self) -> &str {
+        &self.messaging
+    }
+
+    /// Return the normalized public Pricing API base URL string.
+    #[must_use]
+    pub fn pricing_base_url_ref(&self) -> &str {
+        &self.pricing
+    }
+
+    /// Return the normalized public Accounts API base URL string.
+    #[must_use]
+    pub fn accounts_base_url_ref(&self) -> &str {
+        &self.accounts
     }
 }
 
@@ -312,7 +417,8 @@ impl TwilioClientConfig {
     /// Construct client configuration from environment variables.
     ///
     /// Reads `TWILIO_REST_BASE_URL`, `TWILIO_MESSAGING_BASE_URL`,
-    /// `TWILIO_PRICING_BASE_URL`, `TWILIO_TIMEOUT_SECS`, and
+    /// `TWILIO_PRICING_BASE_URL`, `TWILIO_ACCOUNTS_BASE_URL`,
+    /// `TWILIO_TIMEOUT_SECS`, and
     /// `TWILIO_USER_AGENT`. Account credentials are intentionally not read into
     /// client configuration.
     ///
@@ -324,6 +430,7 @@ impl TwilioClientConfig {
             env_var("TWILIO_REST_BASE_URL")?,
             env_var("TWILIO_MESSAGING_BASE_URL")?,
             env_var("TWILIO_PRICING_BASE_URL")?,
+            env_var("TWILIO_ACCOUNTS_BASE_URL")?,
             env_var("TWILIO_TIMEOUT_SECS")?,
             env_var("TWILIO_USER_AGENT")?,
         )
@@ -333,11 +440,16 @@ impl TwilioClientConfig {
         rest_base_url: Option<String>,
         messaging_base_url: Option<String>,
         pricing_base_url: Option<String>,
+        accounts_base_url: Option<String>,
         timeout_secs: Option<String>,
         user_agent: Option<String>,
     ) -> Result<Self, TwilioError> {
-        let base_urls =
-            TwilioConfig::from_env_values(rest_base_url, messaging_base_url, pricing_base_url)?;
+        let base_urls = TwilioConfig::from_env_values(
+            rest_base_url,
+            messaging_base_url,
+            pricing_base_url,
+            accounts_base_url,
+        )?;
         let mut config = Self::new().base_urls(base_urls);
         if let Some(timeout_secs) = non_empty_env(timeout_secs) {
             let timeout_secs = timeout_secs.parse::<u64>().map_err(|_| {
@@ -358,7 +470,7 @@ impl TwilioClientConfig {
         Ok(config)
     }
 
-    /// Replace both Twilio base URLs.
+    /// Replace all Twilio API base URLs.
     #[must_use]
     pub fn base_urls(mut self, base_urls: TwilioConfig) -> Self {
         self.base_urls = base_urls;
@@ -383,6 +495,13 @@ impl TwilioClientConfig {
     #[must_use]
     pub fn pricing_base_url(mut self, value: impl Into<String>) -> Self {
         self.base_urls = self.base_urls.pricing_base_url(value);
+        self
+    }
+
+    /// Set the Twilio Accounts v1 API base URL.
+    #[must_use]
+    pub fn accounts_base_url(mut self, value: impl Into<String>) -> Self {
+        self.base_urls = self.base_urls.accounts_base_url(value);
         self
     }
 
@@ -441,24 +560,26 @@ pub(crate) struct ParsedConfig {
     pub(crate) rest: Url,
     pub(crate) messaging: Url,
     pub(crate) pricing: Url,
+    pub(crate) accounts: Url,
 }
 
 impl ParsedConfig {
     pub(crate) fn parse(config: &TwilioConfig) -> Result<Self, TwilioError> {
         Ok(Self {
-            rest: normalize_base_url(&config.rest_base_url).map_err(TwilioError::InvalidBaseUrl)?,
-            messaging: normalize_base_url(&config.messaging_base_url)
+            rest: normalize_base_url(&config.rest).map_err(TwilioError::InvalidBaseUrl)?,
+            messaging: normalize_base_url(&config.messaging)
                 .map_err(TwilioError::InvalidBaseUrl)?,
-            pricing: normalize_base_url(&config.pricing_base_url)
-                .map_err(TwilioError::InvalidBaseUrl)?,
+            pricing: normalize_base_url(&config.pricing).map_err(TwilioError::InvalidBaseUrl)?,
+            accounts: normalize_base_url(&config.accounts).map_err(TwilioError::InvalidBaseUrl)?,
         })
     }
 
     pub(crate) fn as_public_config(&self) -> TwilioConfig {
         TwilioConfig {
-            rest_base_url: public_base_url(&self.rest),
-            messaging_base_url: public_base_url(&self.messaging),
-            pricing_base_url: public_base_url(&self.pricing),
+            rest: public_base_url(&self.rest),
+            messaging: public_base_url(&self.messaging),
+            pricing: public_base_url(&self.pricing),
+            accounts: public_base_url(&self.accounts),
         }
     }
 }
@@ -537,6 +658,8 @@ pub enum ApiFamily {
     Messaging,
     /// Twilio Pricing v1 API rooted at [`DEFAULT_PRICING_BASE_URL`].
     Pricing,
+    /// Twilio Accounts v1 API rooted at [`DEFAULT_ACCOUNTS_BASE_URL`].
+    Accounts,
 }
 
 /// Retry policy for request-scoped safe-method retries.
@@ -633,6 +756,7 @@ pub struct RequestOptions {
     pub(crate) rest_base_url: Option<String>,
     pub(crate) messaging_base_url: Option<String>,
     pub(crate) pricing_base_url: Option<String>,
+    pub(crate) accounts_base_url: Option<String>,
     pub(crate) timeout: Option<Duration>,
     pub(crate) retry: Option<RetryPolicy>,
     pub(crate) headers: Vec<(String, String)>,
@@ -707,6 +831,26 @@ impl RequestOptions {
         let value = value.as_ref();
         normalize_base_url(value).map_err(TwilioError::InvalidBaseUrl)?;
         self.pricing_base_url = Some(value.to_owned());
+        Ok(self)
+    }
+
+    /// Override the Accounts API base URL for this request.
+    #[must_use]
+    pub fn accounts_base_url(mut self, value: impl Into<String>) -> Self {
+        self.accounts_base_url = Some(value.into());
+        self
+    }
+
+    /// Override the Accounts API base URL for this request, validating it now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError::InvalidBaseUrl`] when the URL is not a valid
+    /// HTTPS base URL accepted by this crate.
+    pub fn try_accounts_base_url(mut self, value: impl AsRef<str>) -> Result<Self, TwilioError> {
+        let value = value.as_ref();
+        normalize_base_url(value).map_err(TwilioError::InvalidBaseUrl)?;
+        self.accounts_base_url = Some(value.to_owned());
         Ok(self)
     }
 
@@ -835,6 +979,12 @@ impl RequestOptions {
                 .map(normalize_base_url)
                 .transpose()
                 .map_err(TwilioError::InvalidBaseUrl),
+            ApiFamily::Accounts => self
+                .accounts_base_url
+                .as_deref()
+                .map(normalize_base_url)
+                .transpose()
+                .map_err(TwilioError::InvalidBaseUrl),
         }
     }
 }
@@ -862,6 +1012,14 @@ impl fmt::Debug for RequestOptions {
             .field(
                 "pricing_base_url",
                 &if self.pricing_base_url.is_some() {
+                    Some(REDACTED)
+                } else {
+                    None
+                },
+            )
+            .field(
+                "accounts_base_url",
+                &if self.accounts_base_url.is_some() {
                     Some(REDACTED)
                 } else {
                     None
@@ -903,6 +1061,15 @@ fn validate_extra_header(name: &str, value: &str) -> Result<(), TwilioError> {
     Ok(())
 }
 
+pub(crate) fn validate_request_spec_headers(
+    headers: &[(String, String)],
+) -> Result<(), TwilioError> {
+    for (name, value) in headers {
+        validate_extra_header(name, value)?;
+    }
+    Ok(())
+}
+
 fn blocked_header_name(name: &HeaderName) -> bool {
     *name == AUTHORIZATION
         || name == CONTENT_TYPE
@@ -940,6 +1107,7 @@ pub struct RequestSpec {
     pub(crate) method: Method,
     pub(crate) target: RequestTarget,
     pub(crate) query: Vec<(String, String)>,
+    pub(crate) headers: Vec<(String, String)>,
     pub(crate) body: RequestBody,
     pub(crate) operation: &'static str,
     pub(crate) continuation: bool,
@@ -959,6 +1127,7 @@ impl RequestSpec {
             method,
             target: RequestTarget::Segments(segments.into_iter().map(Into::into).collect()),
             query: Vec::new(),
+            headers: Vec::new(),
             body: RequestBody::Empty,
             operation: "custom",
             continuation: false,
@@ -977,6 +1146,7 @@ impl RequestSpec {
             method,
             target: RequestTarget::Url(url),
             query: Vec::new(),
+            headers: Vec::new(),
             body: RequestBody::Empty,
             operation,
             continuation: true,
@@ -1009,6 +1179,13 @@ impl RequestSpec {
                 .into_iter()
                 .map(|(key, value)| (key.into(), value.into())),
         );
+        self
+    }
+
+    /// Append a header owned by this typed request.
+    #[must_use]
+    pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push((name.into(), value.into()));
         self
     }
 
@@ -1058,6 +1235,10 @@ impl fmt::Debug for RequestSpec {
             .field("method", &self.method)
             .field("target", &REDACTED)
             .field("query", &format_args!("[{REDACTED}; {}]", self.query.len()))
+            .field(
+                "headers",
+                &format_args!("[{REDACTED}; {}]", self.headers.len()),
+            )
             .field("body", &body)
             .field("operation", &self.operation)
             .field("continuation", &self.continuation)
@@ -1932,6 +2113,9 @@ pub(crate) enum LegacyPageResource<'a> {
 pub(crate) enum V1PageResource<'a> {
     Services,
     TollfreeVerifications,
+    A2PBrandRegistrations,
+    A2PBrandVettings { brand_sid: &'a str },
+    Usa2p { service_sid: &'a str },
     PhoneNumbers { service_sid: &'a str },
     ShortCodes { service_sid: &'a str },
     AlphaSenders { service_sid: &'a str },
@@ -1949,6 +2133,8 @@ impl V1PageResource<'_> {
         match self {
             Self::Services => "services",
             Self::TollfreeVerifications => "verifications",
+            Self::A2PBrandRegistrations | Self::A2PBrandVettings { .. } => "data",
+            Self::Usa2p { .. } => "compliance",
             Self::PhoneNumbers { .. } => "phone_numbers",
             Self::ShortCodes { .. } => "short_codes",
             Self::AlphaSenders { .. } | Self::DestinationAlphaSenders { .. } => "alpha_senders",
@@ -2153,6 +2339,13 @@ fn validate_v1_page_url(
     let expected: Vec<&str> = match resource {
         V1PageResource::Services => vec!["Services"],
         V1PageResource::TollfreeVerifications => vec!["Tollfree", "Verifications"],
+        V1PageResource::A2PBrandRegistrations => vec!["a2p", "BrandRegistrations"],
+        V1PageResource::A2PBrandVettings { brand_sid } => {
+            vec!["a2p", "BrandRegistrations", brand_sid, "Vettings"]
+        }
+        V1PageResource::Usa2p { service_sid } => {
+            vec!["Services", service_sid, "Compliance", "Usa2p"]
+        }
         V1PageResource::PhoneNumbers { service_sid } => {
             vec!["Services", service_sid, "PhoneNumbers"]
         }
@@ -2253,6 +2446,7 @@ fn allowed_legacy_page_query_key(key: &str, resource: LegacyPageResource<'_>) ->
 
 fn allowed_v1_page_query_key(key: &str, resource: V1PageResource<'_>) -> bool {
     matches!(key, "PageSize" | "Page" | "PageToken")
+        || matches!(resource, V1PageResource::A2PBrandVettings { .. }) && key == "VettingProvider"
         || matches!(resource, V1PageResource::DestinationAlphaSenders { .. })
             && key == "IsoCountryCode"
         || matches!(resource, V1PageResource::TollfreeVerifications)
@@ -2854,8 +3048,8 @@ mod tests {
     use crate::diagnostics::SensitiveDiagnostics;
 
     use super::{
-        LegacyPageResource, RequestOptions, RetryPolicy, TwilioClientConfig, TwilioConfig,
-        TwilioCreds, TwilioError, V1PageResource, endpoint_url_from_base,
+        LegacyPageResource, RequestOptions, RetryPolicy, TwilioAuth, TwilioClientConfig,
+        TwilioConfig, TwilioError, V1PageResource, endpoint_url_from_base,
         legacy_page_uri_url_from_base, normalize_base_url, sanitize_diagnostic,
         v1_page_url_from_base, validate_legacy_next_page_continuation,
         validate_v1_next_page_continuation,
@@ -2893,22 +3087,28 @@ mod tests {
             Some("https://proxy.example.test/rest".to_owned()),
             Some("https://proxy.example.test/messaging/v1".to_owned()),
             Some("https://proxy.example.test/pricing/v1".to_owned()),
+            Some("https://proxy.example.test/accounts/v1".to_owned()),
         )
         .expect("valid env base URLs should parse");
-        assert_eq!(base.rest_base_url, "https://proxy.example.test/rest");
+        assert_eq!(base.rest_base_url_ref(), "https://proxy.example.test/rest");
         assert_eq!(
-            base.messaging_base_url,
+            base.messaging_base_url_ref(),
             "https://proxy.example.test/messaging/v1"
         );
         assert_eq!(
-            base.pricing_base_url,
+            base.pricing_base_url_ref(),
             "https://proxy.example.test/pricing/v1"
+        );
+        assert_eq!(
+            base.accounts_base_url_ref(),
+            "https://proxy.example.test/accounts/v1"
         );
 
         let config = TwilioClientConfig::from_env_values(
             Some("https://proxy.example.test/rest".to_owned()),
             Some("https://proxy.example.test/messaging/v1".to_owned()),
             Some("https://proxy.example.test/pricing/v1".to_owned()),
+            Some("https://proxy.example.test/accounts/v1".to_owned()),
             Some("9".to_owned()),
             Some("test-agent/2.0".to_owned()),
         )
@@ -2919,14 +3119,15 @@ mod tests {
         assert!(!rendered.contains("proxy.example.test"));
         assert!(rendered.contains("<redacted>"));
 
-        let err = TwilioClientConfig::from_env_values(None, None, None, Some("0".to_owned()), None)
-            .expect_err("zero timeout should fail");
+        let err =
+            TwilioClientConfig::from_env_values(None, None, None, None, Some("0".to_owned()), None)
+                .expect_err("zero timeout should fail");
         assert!(matches!(err, TwilioError::InvalidRequest(_)));
     }
 
     #[test]
     fn twilio_creds_debug_redacts_owned_secrets() {
-        let creds = TwilioCreds::new("ACdebug-secret", "auth-token-secret");
+        let creds = TwilioAuth::auth_token("ACdebug-secret", "auth-token-secret");
         let rendered = format!("{creds:?}");
 
         assert!(!rendered.contains("ACdebug-secret"));
@@ -2936,7 +3137,7 @@ mod tests {
 
     #[test]
     fn twilio_creds_accepts_secret_values() {
-        let creds = TwilioCreds::new(
+        let creds = TwilioAuth::auth_token(
             crate::Secret::from("ACdirect-secret"),
             crate::Secret::new("direct-auth-token-secret".to_owned()),
         );
@@ -2944,6 +3145,29 @@ mod tests {
 
         assert!(!rendered.contains("ACdirect-secret"));
         assert!(!rendered.contains("direct-auth-token-secret"));
+        assert!(rendered.contains("<redacted>"));
+    }
+
+    #[test]
+    fn twilio_auth_api_key_uses_key_sid_username_and_redacts_all_parts() {
+        let auth = TwilioAuth::api_key("ACapi-key-account", "SKapi-key-sid", "api-key-secret");
+        assert_eq!(auth.account_sid(), "ACapi-key-account");
+        assert_eq!(auth.auth_username(), "SKapi-key-sid");
+        assert_eq!(auth.auth_secret(), "api-key-secret");
+        assert!(auth.sensitive_values().contains(&"ACapi-key-account"));
+        assert!(auth.sensitive_values().contains(&"SKapi-key-sid"));
+        assert!(auth.sensitive_values().contains(&"api-key-secret"));
+
+        let header = auth.basic_auth_header();
+        assert_eq!(
+            header.expose().as_str(),
+            "Basic U0thcGkta2V5LXNpZDphcGkta2V5LXNlY3JldA=="
+        );
+
+        let rendered = format!("{auth:?}");
+        assert!(!rendered.contains("ACapi-key-account"));
+        assert!(!rendered.contains("SKapi-key-sid"));
+        assert!(!rendered.contains("api-key-secret"));
         assert!(rendered.contains("<redacted>"));
     }
 

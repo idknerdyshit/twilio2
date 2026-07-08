@@ -859,12 +859,12 @@ impl<'a> BlockingPricingMessagingCountriesResource<'a> {
 
 #[cfg(feature = "async")]
 fn sensitive_values(account: TwilioAccount<'_>) -> Vec<&str> {
-    vec![account.creds.account_sid(), account.creds.auth_token()]
+    vec![account.creds.account_sid(), account.creds.auth_secret()]
 }
 
 #[cfg(feature = "sync")]
 fn sensitive_values_blocking(account: BlockingTwilioAccount<'_>) -> Vec<&str> {
-    vec![account.creds.account_sid(), account.creds.auth_token()]
+    vec![account.creds.account_sid(), account.creds.auth_secret()]
 }
 
 fn append_query_pairs(url: &mut Url, spec: &RequestSpec) {

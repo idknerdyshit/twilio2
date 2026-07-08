@@ -11,7 +11,7 @@ use crate::blocking_client::BlockingTwilioAccount;
 #[cfg(feature = "async")]
 use crate::client::TwilioAccount;
 use crate::common::{
-    ApiFamily, RequestSpec, TwilioCreds, TwilioError, redacted_option, request_span,
+    ApiFamily, RequestSpec, TwilioAuth, TwilioError, redacted_option, request_span,
 };
 
 /// Query parameters for `GET /Deactivations`.
@@ -31,8 +31,8 @@ impl<'a> FetchDeactivationsRequest<'a> {
         validate_yyyy_mm_dd("Date", self.date)
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds) -> Vec<&'a str> {
-        vec![creds.account_sid(), creds.auth_token(), self.date]
+    fn sensitive_values(self, creds: &'a TwilioAuth) -> Vec<&'a str> {
+        vec![creds.account_sid(), creds.auth_secret(), self.date]
     }
 }
 

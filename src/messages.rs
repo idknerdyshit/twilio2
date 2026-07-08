@@ -16,10 +16,10 @@ use crate::client::TwilioAccount;
 #[cfg(feature = "sync")]
 use crate::common::BlockingTwilioPaginator;
 use crate::common::{
-    ApiFamily, DEFAULT_PAGE_SIZE, FormEnum, FormParam, LegacyPageResource, RequestSpec,
-    TwilioCreds, TwilioError, TwilioMediaContent, decode_json_response, has_non_empty, non_empty,
-    parse_rfc2822, push_bool, push_enum, push_sensitive, push_str, push_u32, redacted_option,
-    request_span, validate_legacy_next_page_continuation, validate_page_size,
+    ApiFamily, DEFAULT_PAGE_SIZE, FormEnum, FormParam, LegacyPageResource, RequestSpec, TwilioAuth,
+    TwilioError, TwilioMediaContent, decode_json_response, has_non_empty, non_empty, parse_rfc2822,
+    push_bool, push_enum, push_sensitive, push_str, push_u32, redacted_option, request_span,
+    validate_legacy_next_page_continuation, validate_page_size,
 };
 #[cfg(feature = "async")]
 use crate::common::{PageFuture, TwilioPaginator};
@@ -104,6 +104,42 @@ impl FormEnum for RiskCheck {
     }
 }
 
+/// Compliance Toolkit intent classification for a message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageIntent<'a> {
+    Otp,
+    Notifications,
+    Fraud,
+    Security,
+    CustomerCare,
+    Delivery,
+    Education,
+    Events,
+    Polling,
+    Announcements,
+    Marketing,
+    Custom(&'a str),
+}
+
+impl<'a> MessageIntent<'a> {
+    fn form_value(self) -> &'a str {
+        match self {
+            Self::Otp => "otp",
+            Self::Notifications => "notifications",
+            Self::Fraud => "fraud",
+            Self::Security => "security",
+            Self::CustomerCare => "customercare",
+            Self::Delivery => "delivery",
+            Self::Education => "education",
+            Self::Events => "events",
+            Self::Polling => "polling",
+            Self::Announcements => "announcements",
+            Self::Marketing => "marketing",
+            Self::Custom(value) => value,
+        }
+    }
+}
+
 /// Status values this crate allows callers to send in a Message update request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpdateMessageStatus {
@@ -136,30 +172,31 @@ impl FormEnum for MessageFeedbackOutcome {
 
 /// Request body for `POST /Messages.json`.
 pub struct CreateMessageRequest<'a> {
-    pub to: &'a str,
-    pub from: Option<&'a str>,
-    pub messaging_service_sid: Option<&'a str>,
-    pub body: Option<&'a str>,
-    pub media_urls: &'a [&'a str],
-    pub content_sid: Option<&'a str>,
-    pub status_callback: Option<&'a str>,
-    pub application_sid: Option<&'a str>,
-    pub provide_feedback: Option<bool>,
-    pub attempt: Option<u32>,
-    pub validity_period: Option<u32>,
-    pub content_retention: Option<ContentRetention>,
-    pub address_retention: Option<AddressRetention>,
-    pub smart_encoded: Option<bool>,
-    pub persistent_actions: &'a [&'a str],
-    pub traffic_type: Option<TrafficType>,
-    pub shorten_urls: Option<bool>,
-    pub schedule_type: Option<ScheduleType>,
-    pub send_at: Option<&'a str>,
-    pub send_as_mms: Option<bool>,
-    pub content_variables_json: Option<&'a str>,
-    pub risk_check: Option<RiskCheck>,
-    pub fallback_from: Option<&'a str>,
-    pub tags_json: Option<&'a str>,
+    to: &'a str,
+    from: Option<&'a str>,
+    messaging_service_sid: Option<&'a str>,
+    body: Option<&'a str>,
+    media_urls: &'a [&'a str],
+    content_sid: Option<&'a str>,
+    status_callback: Option<&'a str>,
+    application_sid: Option<&'a str>,
+    provide_feedback: Option<bool>,
+    attempt: Option<u32>,
+    validity_period: Option<u32>,
+    content_retention: Option<ContentRetention>,
+    address_retention: Option<AddressRetention>,
+    smart_encoded: Option<bool>,
+    persistent_actions: &'a [&'a str],
+    traffic_type: Option<TrafficType>,
+    shorten_urls: Option<bool>,
+    schedule_type: Option<ScheduleType>,
+    send_at: Option<&'a str>,
+    send_as_mms: Option<bool>,
+    content_variables_json: Option<&'a str>,
+    risk_check: Option<RiskCheck>,
+    message_intent: Option<MessageIntent<'a>>,
+    fallback_from: Option<&'a str>,
+    tags_json: Option<&'a str>,
 }
 
 impl<'a> CreateMessageRequest<'a> {
@@ -188,6 +225,7 @@ impl<'a> CreateMessageRequest<'a> {
             send_as_mms: None,
             content_variables_json: None,
             risk_check: None,
+            message_intent: None,
             fallback_from: None,
             tags_json: None,
         }
@@ -320,6 +358,12 @@ impl<'a> CreateMessageRequest<'a> {
     }
 
     #[must_use]
+    pub fn message_intent(mut self, value: MessageIntent<'a>) -> Self {
+        self.message_intent = Some(value);
+        self
+    }
+
+    #[must_use]
     pub fn fallback_from(mut self, value: &'a str) -> Self {
         self.fallback_from = Some(value);
         self
@@ -393,6 +437,13 @@ impl<'a> CreateMessageRequest<'a> {
                 "ContentVariables requires ContentSid".to_owned(),
             ));
         }
+        if let Some(MessageIntent::Custom(value)) = self.message_intent {
+            if value.trim().is_empty() {
+                return Err(TwilioError::InvalidRequest(
+                    "MessageIntent must not be empty".to_owned(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -428,13 +479,20 @@ impl<'a> CreateMessageRequest<'a> {
         push_bool(&mut params, "SendAsMms", self.send_as_mms);
         push_str(&mut params, "ContentVariables", self.content_variables_json);
         push_enum(&mut params, "RiskCheck", self.risk_check);
+        if let Some(message_intent) = self.message_intent {
+            push_str(
+                &mut params,
+                "MessageIntent",
+                Some(message_intent.form_value()),
+            );
+        }
         push_str(&mut params, "FallbackFrom", self.fallback_from);
         push_str(&mut params, "Tags", self.tags_json);
         params
     }
 
-    pub(crate) fn sensitive_values(&self, creds: &'a TwilioCreds) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid(), creds.auth_token(), self.to];
+    pub(crate) fn sensitive_values(&self, creds: &'a TwilioAuth) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_secret(), self.to];
         push_sensitive(&mut values, self.from);
         push_sensitive(&mut values, self.messaging_service_sid);
         push_sensitive(&mut values, self.body);
@@ -445,6 +503,9 @@ impl<'a> CreateMessageRequest<'a> {
         values.extend(self.persistent_actions.iter().copied());
         push_sensitive(&mut values, self.send_at);
         push_sensitive(&mut values, self.content_variables_json);
+        if let Some(MessageIntent::Custom(value)) = self.message_intent {
+            values.push(value);
+        }
         push_sensitive(&mut values, self.fallback_from);
         push_sensitive(&mut values, self.tags_json);
         values
@@ -454,14 +515,14 @@ impl<'a> CreateMessageRequest<'a> {
 /// Query parameters for the first page of `GET /Messages.json`.
 #[derive(Clone, Copy, Default)]
 pub struct ListMessagesRequest<'a> {
-    pub to: Option<&'a str>,
-    pub from: Option<&'a str>,
-    pub date_sent: Option<&'a str>,
-    pub date_sent_before: Option<&'a str>,
-    pub date_sent_after: Option<&'a str>,
-    pub page_size: Option<u32>,
-    pub page: Option<u32>,
-    pub page_token: Option<&'a str>,
+    to: Option<&'a str>,
+    from: Option<&'a str>,
+    date_sent: Option<&'a str>,
+    date_sent_before: Option<&'a str>,
+    date_sent_after: Option<&'a str>,
+    page_size: Option<u32>,
+    page: Option<u32>,
+    page_token: Option<&'a str>,
 }
 
 impl<'a> ListMessagesRequest<'a> {
@@ -550,8 +611,8 @@ impl<'a> ListMessagesRequest<'a> {
         }
     }
 
-    pub(crate) fn sensitive_values(&self, creds: &'a TwilioCreds) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid(), creds.auth_token()];
+    pub(crate) fn sensitive_values(&self, creds: &'a TwilioAuth) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_secret()];
         push_sensitive(&mut values, self.to);
         push_sensitive(&mut values, self.from);
         push_sensitive(&mut values, self.date_sent);
@@ -565,8 +626,8 @@ impl<'a> ListMessagesRequest<'a> {
 /// Request body for updating a Message.
 #[derive(Clone, Copy, Default)]
 pub struct UpdateMessageRequest<'a> {
-    pub body: Option<&'a str>,
-    pub status: Option<UpdateMessageStatus>,
+    body: Option<&'a str>,
+    status: Option<UpdateMessageStatus>,
 }
 
 impl<'a> UpdateMessageRequest<'a> {
@@ -631,8 +692,8 @@ impl<'a> UpdateMessageRequest<'a> {
         params
     }
 
-    pub(crate) fn sensitive_values(&self, creds: &'a TwilioCreds, sid: &'a str) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid(), creds.auth_token(), sid];
+    pub(crate) fn sensitive_values(&self, creds: &'a TwilioAuth, sid: &'a str) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_secret(), sid];
         push_sensitive(&mut values, self.body);
         values
     }
@@ -641,12 +702,12 @@ impl<'a> UpdateMessageRequest<'a> {
 /// Query parameters for the first page of a Message's Media list.
 #[derive(Clone, Copy, Default)]
 pub struct ListMediaRequest<'a> {
-    pub date_created: Option<&'a str>,
-    pub date_created_before: Option<&'a str>,
-    pub date_created_after: Option<&'a str>,
-    pub page_size: Option<u32>,
-    pub page: Option<u32>,
-    pub page_token: Option<&'a str>,
+    date_created: Option<&'a str>,
+    date_created_before: Option<&'a str>,
+    date_created_after: Option<&'a str>,
+    page_size: Option<u32>,
+    page: Option<u32>,
+    page_token: Option<&'a str>,
 }
 
 impl<'a> ListMediaRequest<'a> {
@@ -719,10 +780,10 @@ impl<'a> ListMediaRequest<'a> {
 
     pub(crate) fn sensitive_values(
         &self,
-        creds: &'a TwilioCreds,
+        creds: &'a TwilioAuth,
         message_sid: &'a str,
     ) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid(), creds.auth_token(), message_sid];
+        let mut values = vec![creds.account_sid(), creds.auth_secret(), message_sid];
         push_sensitive(&mut values, self.date_created);
         push_sensitive(&mut values, self.date_created_before);
         push_sensitive(&mut values, self.date_created_after);
@@ -734,7 +795,7 @@ impl<'a> ListMediaRequest<'a> {
 /// Request for `POST /Messages/{MessageSid}/Feedback.json`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CreateMessageFeedbackRequest {
-    pub outcome: MessageFeedbackOutcome,
+    outcome: MessageFeedbackOutcome,
 }
 
 impl CreateMessageFeedbackRequest {
@@ -1207,7 +1268,7 @@ impl<'a> MessagesResource<'a> {
         async move {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
-                self.account.creds.auth_token(),
+                self.account.creds.auth_secret(),
                 next_page_uri,
             ];
             let url = self.account.client.legacy_page_url(
@@ -1315,7 +1376,7 @@ impl<'a> MessageResource<'a> {
         async move {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
-                self.account.creds.auth_token(),
+                self.account.creds.auth_secret(),
                 self.sid,
             ];
             let spec = self.message_spec(Method::GET, "message.fetch")?;
@@ -1367,7 +1428,7 @@ impl<'a> MessageResource<'a> {
         async move {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
-                self.account.creds.auth_token(),
+                self.account.creds.auth_secret(),
                 self.sid,
             ];
             let spec = self.message_spec(Method::DELETE, "message.delete")?;
@@ -1535,7 +1596,7 @@ impl<'a> MessageMediaResource<'a> {
         async move {
             let sensitive_values = vec![
                 self.message.account.creds.account_sid(),
-                self.message.account.creds.auth_token(),
+                self.message.account.creds.auth_secret(),
                 self.message.sid,
                 next_page_uri,
             ];
@@ -1616,7 +1677,7 @@ impl<'a> MessageMediaResource<'a> {
     fn sensitive_values(self, media_sid: &'a str) -> Vec<&'a str> {
         vec![
             self.message.account.creds.account_sid(),
-            self.message.account.creds.auth_token(),
+            self.message.account.creds.auth_secret(),
             self.message.sid,
             media_sid,
         ]
@@ -1710,7 +1771,7 @@ impl MessageFeedbackResource<'_> {
         async move {
             let sensitive_values = vec![
                 self.message.account.creds.account_sid(),
-                self.message.account.creds.auth_token(),
+                self.message.account.creds.auth_secret(),
                 self.message.sid,
             ];
             let form_params = request.form_params();
@@ -1825,7 +1886,7 @@ impl<'a> BlockingMessagesResource<'a> {
         .in_scope(|| {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
-                self.account.creds.auth_token(),
+                self.account.creds.auth_secret(),
                 next_page_uri,
             ];
             let url = self.account.client.legacy_page_url(
@@ -1921,7 +1982,7 @@ impl<'a> BlockingMessageResource<'a> {
         request_span(&self.account.client.config.rest, "message.fetch", "GET").in_scope(|| {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
-                self.account.creds.auth_token(),
+                self.account.creds.auth_secret(),
                 self.sid,
             ];
             let spec = self.message_spec(Method::GET, "message.fetch")?;
@@ -1957,7 +2018,7 @@ impl<'a> BlockingMessageResource<'a> {
         request_span(&self.account.client.config.rest, "message.delete", "DELETE").in_scope(|| {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
-                self.account.creds.auth_token(),
+                self.account.creds.auth_secret(),
                 self.sid,
             ];
             let spec = self.message_spec(Method::DELETE, "message.delete")?;
@@ -2118,7 +2179,7 @@ impl<'a> BlockingMessageMediaResource<'a> {
         .in_scope(|| {
             let sensitive_values = vec![
                 self.message.account.creds.account_sid(),
-                self.message.account.creds.auth_token(),
+                self.message.account.creds.auth_secret(),
                 self.message.sid,
                 next_page_uri,
             ];
@@ -2190,7 +2251,7 @@ impl<'a> BlockingMessageMediaResource<'a> {
     fn sensitive_values(self, media_sid: &'a str) -> Vec<&'a str> {
         vec![
             self.message.account.creds.account_sid(),
-            self.message.account.creds.auth_token(),
+            self.message.account.creds.auth_secret(),
             self.message.sid,
             media_sid,
         ]
@@ -2283,7 +2344,7 @@ impl BlockingMessageFeedbackResource<'_> {
         .in_scope(|| {
             let sensitive_values = vec![
                 self.message.account.creds.account_sid(),
-                self.message.account.creds.auth_token(),
+                self.message.account.creds.auth_secret(),
                 self.message.sid,
             ];
             let url = self.message.account.client.rest_endpoint(&[

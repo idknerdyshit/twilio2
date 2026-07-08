@@ -11,15 +11,19 @@ use rust_decimal::Decimal;
 use support::twilio_config;
 use support::{HttpsMockServer, MockResponse, blocking_client_for, test_agent, test_creds};
 use twilio2::{
-    ApiFamily, BlockingTwilioClient, CreateMessageRequest, CreateTollfreeVerificationRequest,
-    FetchDeactivationsRequest, ListMessagesRequest, ListPricingMessagingCountriesRequest,
-    ListTollfreeVerificationsRequest, Operation, RawResponse, RequestOptions, RequestSpec,
-    RetryPolicy, TollfreeBusinessRegistrationAuthority, TollfreeBusinessType,
-    TollfreeMessageVolume, TollfreeOptInType, TollfreeUseCaseCategory, TollfreeVerificationStatus,
-    TollfreeVettingProvider, TwilioClientConfig, TwilioError, TwilioInboundSmsPrice,
-    TwilioOutboundSmsPrice, TwilioPricingMessaging, TwilioPricingMessagingCountry,
-    TwilioPricingMessagingCountryPage, TwilioPricingMessagingCountrySummary, TwilioSmsPrice,
-    UpdateTollfreeVerificationRequest,
+    A2PBrandType, A2PUsecase, A2PVettingProvider, ApiFamily, BlockingTwilioClient,
+    BulkConsentsRequest, BulkContactsRequest, ConsentItem, ConsentSource, ConsentStatus,
+    ContactItem, CreateA2PBrandRegistrationRequest, CreateA2PBrandVettingRequest,
+    CreateMessageRequest, CreateTollfreeVerificationRequest, CreateUsa2pRequest,
+    FetchDeactivationsRequest, FetchUsa2pUsecasesRequest, ListA2PBrandRegistrationsRequest,
+    ListA2PBrandVettingsRequest, ListMessagesRequest, ListPricingMessagingCountriesRequest,
+    ListTollfreeVerificationsRequest, ListUsa2pRequest, Operation, RawResponse, RequestOptions,
+    RequestSpec, RetryPolicy, SafeListNumberRequest, TollfreeBusinessRegistrationAuthority,
+    TollfreeBusinessType, TollfreeMessageVolume, TollfreeOptInType, TollfreeUseCaseCategory,
+    TollfreeVerificationStatus, TollfreeVettingProvider, TwilioClientConfig, TwilioError,
+    TwilioInboundSmsPrice, TwilioOutboundSmsPrice, TwilioPricingMessaging,
+    TwilioPricingMessagingCountry, TwilioPricingMessagingCountryPage,
+    TwilioPricingMessagingCountrySummary, TwilioSmsPrice, UpdateTollfreeVerificationRequest,
 };
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -58,13 +62,16 @@ fn constructors_config_and_debug_are_ergonomic_and_redacted() {
 
     let client = BlockingTwilioClient::from_config_and_agent(config.clone(), test_agent()).unwrap();
     let retained = client.config();
-    assert_eq!(retained.rest_base_url, "https://proxy.example.test/rest");
     assert_eq!(
-        retained.messaging_base_url,
+        retained.rest_base_url_ref(),
+        "https://proxy.example.test/rest"
+    );
+    assert_eq!(
+        retained.messaging_base_url_ref(),
         "https://proxy.example.test/messaging/v1"
     );
     assert_eq!(
-        retained.pricing_base_url,
+        retained.pricing_base_url_ref(),
         "https://proxy.example.test/pricing/v1"
     );
     assert!(!format!("{config:?}").contains("proxy.example.test"));
@@ -72,11 +79,11 @@ fn constructors_config_and_debug_are_ergonomic_and_redacted() {
 
     let default = BlockingTwilioClient::from_agent(test_agent());
     assert_eq!(
-        default.config().rest_base_url,
+        default.config().rest_base_url_ref(),
         twilio2::DEFAULT_REST_BASE_URL
     );
     assert_eq!(
-        default.config().pricing_base_url,
+        default.config().pricing_base_url_ref(),
         twilio2::DEFAULT_PRICING_BASE_URL
     );
 }
@@ -433,6 +440,255 @@ fn messages_create_list_and_blocking_paginator_use_expected_wire_shape() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn a2p_and_accounts_features_have_blocking_wire_shape() {
+    let runtime = runtime();
+    let server = start_server(
+        &runtime,
+        vec![
+            MockResponse::created_json(a2p_brand_json("BNcreate")),
+            MockResponse::json(page_json(
+                "data",
+                "a2p/BrandRegistrations",
+                &[a2p_brand_json("BNlist")],
+                Some("/v1/a2p/BrandRegistrations?PageSize=2&Page=1&PageToken=next"),
+            )),
+            MockResponse::json(page_json("data", "a2p/BrandRegistrations", &[], None)),
+            MockResponse::json(a2p_brand_json("BNfetch")),
+            MockResponse::json(a2p_brand_json("BNupdate")),
+            MockResponse::created_json(a2p_vetting_json("VTcreate")),
+            MockResponse::json(page_json(
+                "data",
+                "a2p/BrandRegistrations/BNbrand/Vettings",
+                &[a2p_vetting_json("VTlist")],
+                Some(
+                    "/v1/a2p/BrandRegistrations/BNbrand/Vettings?PageSize=2&Page=1&PageToken=next",
+                ),
+            )),
+            MockResponse::json(page_json(
+                "data",
+                "a2p/BrandRegistrations/BNbrand/Vettings",
+                &[],
+                None,
+            )),
+            MockResponse::json(a2p_vetting_json("VTfetch")),
+            MockResponse::created_json(usa2p_json("QEcreate")),
+            MockResponse::json(page_json(
+                "compliance",
+                "Services/MG123/Compliance/Usa2p",
+                &[usa2p_json("QElist")],
+                Some("/v1/Services/MG123/Compliance/Usa2p?PageSize=2&Page=1&PageToken=next"),
+            )),
+            MockResponse::json(page_json(
+                "compliance",
+                "Services/MG123/Compliance/Usa2p",
+                &[],
+                None,
+            )),
+            MockResponse::json(usa2p_json("QEfetch")),
+            MockResponse::json(usa2p_usecases_json()),
+            MockResponse::no_content(),
+            MockResponse::json(bulk_contacts_response_json()),
+            MockResponse::json(bulk_consents_response_json()),
+            MockResponse::created_json(safe_list_json("+18001234567")),
+            MockResponse::json(safe_list_json("+18001234567")),
+            MockResponse::no_content(),
+        ],
+    );
+    let client = blocking_client_for(&server);
+    let account = client.account(test_creds());
+
+    let brand = account
+        .a2p_brand_registrations()
+        .create(
+            CreateA2PBrandRegistrationRequest::new()
+                .customer_profile_bundle_sid("BUcustomer")
+                .a2p_profile_bundle_sid("BUa2p")
+                .brand_type(A2PBrandType::Standard)
+                .mock(true),
+        )
+        .unwrap();
+    let brand_page = account
+        .a2p_brand_registrations()
+        .list(ListA2PBrandRegistrationsRequest::new().page_size(2).page(0))
+        .unwrap();
+    let brand_next = format!(
+        "{}/v1/a2p/BrandRegistrations?PageSize=2&Page=1&PageToken=next",
+        server.base_url
+    );
+    let brand_second = account
+        .a2p_brand_registrations()
+        .list_page_url(&brand_next)
+        .unwrap();
+    let brand_fetch = account.a2p_brand_registration("BNfetch").fetch().unwrap();
+    let brand_update = account.a2p_brand_registration("BNupdate").update().unwrap();
+    let vetting = account
+        .a2p_brand_registration("BNbrand")
+        .vettings()
+        .create(
+            CreateA2PBrandVettingRequest::new(A2PVettingProvider::CampaignVerify)
+                .vetting_id("vetting-token"),
+        )
+        .unwrap();
+    let vetting_page = account
+        .a2p_brand_registration("BNbrand")
+        .vettings()
+        .list(ListA2PBrandVettingsRequest::new().page_size(2).page(0))
+        .unwrap();
+    let vetting_next = format!(
+        "{}/v1/a2p/BrandRegistrations/BNbrand/Vettings?PageSize=2&Page=1&PageToken=next",
+        server.base_url
+    );
+    let vetting_second = account
+        .a2p_brand_registration("BNbrand")
+        .vettings()
+        .list_page_url(&vetting_next)
+        .unwrap();
+    let vetting_fetch = account
+        .a2p_brand_registration("BNbrand")
+        .vettings()
+        .fetch("VTfetch")
+        .unwrap();
+
+    let usa2p_request = CreateUsa2pRequest::new()
+        .brand_registration_sid("BN123")
+        .description("Transactional alerts for customer account activity.")
+        .message_flow("Customers opt in during account signup and settings.")
+        .message_samples(&[
+            "Your account login code is 123456.",
+            "A new device signed in to your account.",
+        ])
+        .us_app_to_person_usecase(A2PUsecase::Marketing)
+        .has_embedded_links(true)
+        .has_embedded_phone(false);
+    let usa2p = account
+        .service("MG123")
+        .usa2p()
+        .create(usa2p_request)
+        .unwrap();
+    let usa2p_page = account
+        .service("MG123")
+        .usa2p()
+        .list(ListUsa2pRequest::new().page_size(2).page(0))
+        .unwrap();
+    let usa2p_next = format!(
+        "{}/v1/Services/MG123/Compliance/Usa2p?PageSize=2&Page=1&PageToken=next",
+        server.base_url
+    );
+    let usa2p_second = account
+        .service("MG123")
+        .usa2p()
+        .list_page_url(&usa2p_next)
+        .unwrap();
+    let usa2p_fetch = account.service("MG123").usa2p().fetch("QEfetch").unwrap();
+    let usecases = account
+        .service("MG123")
+        .usa2p_usecases()
+        .fetch(FetchUsa2pUsecasesRequest::new().brand_registration_sid("BN123"))
+        .unwrap();
+    account.service("MG123").usa2p().delete("QEdelete").unwrap();
+
+    let contacts = account
+        .contacts()
+        .bulk_upsert(BulkContactsRequest::new().item(ContactItem::new(
+            "+19999999999",
+            "ad388b5a46b33b874b0d41f7226db2ef",
+            "US",
+            "12345",
+        )))
+        .unwrap();
+    let consents = account
+        .consents()
+        .bulk_upsert(BulkConsentsRequest::new().item(ConsentItem::new(
+            "+19999999999",
+            "ad388b5a46b33b874b0d41f7226db2ef",
+            "MG00000000000000000000000000000001",
+            ConsentStatus::OptOut,
+            ConsentSource::Website,
+        )))
+        .unwrap();
+    let safe_added = account
+        .global_safe_list()
+        .add(SafeListNumberRequest::new("+18001234567"))
+        .unwrap();
+    let safe_checked = account
+        .global_safe_list()
+        .check(SafeListNumberRequest::new("+18001234567"))
+        .unwrap();
+    account
+        .global_safe_list()
+        .remove(SafeListNumberRequest::new("+18001234567"))
+        .unwrap();
+
+    assert_eq!(brand.sid.as_deref(), Some("BNcreate"));
+    assert_eq!(
+        brand_page.brand_registrations[0].sid.as_deref(),
+        Some("BNlist")
+    );
+    assert!(brand_second.brand_registrations.is_empty());
+    assert_eq!(brand_fetch.sid.as_deref(), Some("BNfetch"));
+    assert_eq!(brand_update.sid.as_deref(), Some("BNupdate"));
+    assert_eq!(vetting.brand_vetting_sid.as_deref(), Some("VTcreate"));
+    assert_eq!(
+        vetting_page.vettings[0].brand_vetting_sid.as_deref(),
+        Some("VTlist")
+    );
+    assert!(vetting_second.vettings.is_empty());
+    assert_eq!(vetting_fetch.brand_vetting_sid.as_deref(), Some("VTfetch"));
+    assert_eq!(usa2p.sid.as_deref(), Some("QEcreate"));
+    assert_eq!(usa2p_page.compliance[0].sid.as_deref(), Some("QElist"));
+    assert!(usa2p_second.compliance.is_empty());
+    assert_eq!(usa2p_fetch.sid.as_deref(), Some("QEfetch"));
+    assert_eq!(
+        usecases.us_app_to_person_usecases[0].code.as_deref(),
+        Some("MARKETING")
+    );
+    assert_eq!(
+        contacts.items[0].contact_id.as_deref(),
+        Some("+19999999999")
+    );
+    assert_eq!(consents.items[0].status.as_deref(), Some("opt-out"));
+    assert_eq!(safe_added.phone_number.as_deref(), Some("+18001234567"));
+    assert_eq!(safe_checked.sid.as_deref(), Some("GN123"));
+
+    let requests = server.requests();
+    assert_eq!(requests[0].path, "/v1/a2p/BrandRegistrations");
+    assert!(
+        requests[0]
+            .body
+            .contains("CustomerProfileBundleSid=BUcustomer")
+    );
+    assert_eq!(
+        requests[1].path,
+        "/v1/a2p/BrandRegistrations?PageSize=2&Page=0"
+    );
+    assert_eq!(
+        requests[2].path,
+        "/v1/a2p/BrandRegistrations?PageSize=2&Page=1&PageToken=next"
+    );
+    assert_eq!(
+        requests[5].body,
+        "VettingProvider=campaign-verify&VettingId=vetting-token"
+    );
+    assert_eq!(requests[9].path, "/v1/Services/MG123/Compliance/Usa2p");
+    assert!(requests[9].body.contains("UsAppToPersonUsecase=MARKETING"));
+    assert_eq!(
+        requests[13].path,
+        "/v1/Services/MG123/Compliance/Usa2p/Usecases?BrandRegistrationSid=BN123"
+    );
+    assert_eq!(requests[14].method, "DELETE");
+    assert_eq!(requests[15].path, "/v1/Contacts/Bulk");
+    assert_eq!(decoded_form_pairs(&requests[15].body)[0].0, "Items");
+    assert_eq!(requests[16].path, "/v1/Consents/Bulk");
+    assert_eq!(requests[17].body, "PhoneNumber=%2B18001234567");
+    assert_eq!(
+        requests[18].path,
+        "/v1/SafeList/Numbers?PhoneNumber=%2B18001234567"
+    );
+    assert_eq!(requests[19].method, "DELETE");
+}
+
+#[test]
 fn deactivations_accept_307_and_list_validation_happens_before_transport() {
     let runtime = runtime();
     let server = start_server(
@@ -748,7 +1004,16 @@ fn tollfree_verification_page_json(
     verifications: &[String],
     next_page_url: Option<&str>,
 ) -> String {
-    let next = next_page_url.map_or_else(|| "null".to_owned(), |value| format!(r#""{value}""#));
+    let next = next_page_url.map_or_else(
+        || "null".to_owned(),
+        |value| {
+            if value.starts_with('/') {
+                format!(r#""__BASE_URL__{value}""#)
+            } else {
+                format!(r#""{value}""#)
+            }
+        },
+    );
     format!(
         r#"{{
             "meta": {{
@@ -764,6 +1029,144 @@ fn tollfree_verification_page_json(
         }}"#,
         verifications = verifications.join(",")
     )
+}
+
+fn page_json(
+    key: &str,
+    collection_key: &str,
+    items: &[String],
+    next_page_url: Option<&str>,
+) -> String {
+    let next = next_page_url.map_or_else(
+        || "null".to_owned(),
+        |value| {
+            if value.starts_with('/') {
+                format!(r#""__BASE_URL__{value}""#)
+            } else {
+                format!(r#""{value}""#)
+            }
+        },
+    );
+    format!(
+        r#"{{
+            "meta":{{
+                "page":0,
+                "page_size":2,
+                "first_page_url":"__BASE_URL__/v1/{collection_key}?PageSize=2&Page=0",
+                "previous_page_url":null,
+                "next_page_url":{next},
+                "key":"{key}",
+                "url":"__BASE_URL__/v1/{collection_key}?PageSize=2&Page=0"
+            }},
+            "{key}":[{items}]
+        }}"#,
+        items = items.join(",")
+    )
+}
+
+fn decoded_form_pairs(body: &str) -> Vec<(String, String)> {
+    url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect()
+}
+
+fn a2p_brand_json(sid: &str) -> String {
+    format!(
+        r#"{{
+            "sid":"{sid}",
+            "account_sid":"AC123",
+            "customer_profile_bundle_sid":"BUcustomer",
+            "a2p_profile_bundle_sid":"BUa2p",
+            "date_created":"2026-07-05T00:00:00Z",
+            "date_updated":"2026-07-05T00:00:00Z",
+            "brand_type":"STANDARD",
+            "status":"APPROVED",
+            "tcr_id":"B123",
+            "failure_reason":null,
+            "url":"https://messaging.twilio.com/v1/a2p/BrandRegistrations/{sid}",
+            "brand_score":42,
+            "brand_feedback":["TAX_ID"],
+            "identity_status":"VERIFIED",
+            "russell_3000":false,
+            "government_entity":false,
+            "tax_exempt_status":null,
+            "skip_automatic_sec_vet":true,
+            "mock":true,
+            "errors":[],
+            "links":{{}}
+        }}"#
+    )
+}
+
+fn a2p_vetting_json(sid: &str) -> String {
+    format!(
+        r#"{{
+            "account_sid":"AC123",
+            "brand_sid":"BNbrand",
+            "brand_vetting_sid":"{sid}",
+            "vetting_provider":"campaign-verify",
+            "vetting_id":"vetting-token",
+            "vetting_class":"STANDARD",
+            "vetting_status":"APPROVED",
+            "date_created":"2026-07-05T00:00:00Z",
+            "date_updated":"2026-07-05T00:00:00Z",
+            "url":"https://messaging.twilio.com/v1/a2p/BrandRegistrations/BNbrand/Vettings/{sid}"
+        }}"#
+    )
+}
+
+fn usa2p_json(sid: &str) -> String {
+    format!(
+        r#"{{
+            "sid":"{sid}",
+            "account_sid":"AC123",
+            "brand_registration_sid":"BN123",
+            "messaging_service_sid":"MG123",
+            "description":"Transactional alerts for customer account activity.",
+            "message_samples":["Your account login code is 123456.","A new device signed in to your account."],
+            "us_app_to_person_usecase":"MARKETING",
+            "has_embedded_links":true,
+            "has_embedded_phone":false,
+            "subscriber_opt_in":true,
+            "age_gated":false,
+            "direct_lending":false,
+            "campaign_status":"VERIFIED",
+            "campaign_id":"C123",
+            "is_externally_registered":false,
+            "message_flow":"Customers opt in during account signup and settings.",
+            "opt_in_message":"You are opted in for account alerts.",
+            "opt_out_message":"You have opted out of account alerts.",
+            "help_message":"Reply HELP for account alert assistance.",
+            "opt_in_keywords":["START"],
+            "opt_out_keywords":["STOP"],
+            "help_keywords":["HELP"],
+            "date_created":"2026-07-05T00:00:00Z",
+            "date_updated":"2026-07-05T00:00:00Z",
+            "url":"https://messaging.twilio.com/v1/Services/MG123/Compliance/Usa2p/{sid}",
+            "mock":false,
+            "errors":[],
+            "rate_limits":{{}}
+        }}"#
+    )
+}
+
+fn usa2p_usecases_json() -> String {
+    r#"{"us_app_to_person_usecases":[{"code":"MARKETING","name":"Marketing","description":"Marketing messages","post_approval_required":true}]}"#
+        .to_owned()
+}
+
+fn bulk_contacts_response_json() -> String {
+    r#"{"items":[{"contact_id":"+19999999999","correlation_id":"ad388b5a46b33b874b0d41f7226db2ef","country_iso_code":"US","zip_code":"12345","error_code":0,"error_messages":[]}]}"#
+        .to_owned()
+}
+
+fn bulk_consents_response_json() -> String {
+    r#"{"items":[{"contact_id":"+19999999999","correlation_id":"ad388b5a46b33b874b0d41f7226db2ef","sender_id":"MG00000000000000000000000000000001","status":"opt-out","source":"website","error_code":0,"error_messages":[]}]}"#
+        .to_owned()
+}
+
+fn safe_list_json(phone_number: &str) -> String {
+    format!(r#"{{"sid":"GN123","phone_number":"{phone_number}"}}"#)
 }
 
 fn pricing_messaging_json() -> String {

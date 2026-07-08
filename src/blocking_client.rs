@@ -7,14 +7,15 @@ use http::HeaderMap;
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use url::Url;
 
+use crate::a2p::{BlockingA2PBrandRegistrationResource, BlockingA2PBrandRegistrationsResource};
 use crate::common::{
     ApiFamily, ApiResponse, AttemptTrace, Operation, OperationTrace, ParsedConfig, RawResponse,
-    RequestBody, RequestOptions, RequestSpec, RequestTarget, ResponseMeta, RetryPolicy,
-    TwilioClientConfig, TwilioConfig, TwilioCreds, TwilioError, api_error_from_body,
+    RequestBody, RequestOptions, RequestSpec, RequestTarget, ResponseMeta, RetryPolicy, TwilioAuth,
+    TwilioClientConfig, TwilioConfig, TwilioError, api_error_from_body,
     api_error_from_read_error_message, attempt_error, attempt_response, attempt_span,
     decode_json_response, endpoint_url_from_base, legacy_page_uri_url_from_base,
     owned_sensitive_values, pricing_page_url_from_base, read_limited_reader_body,
-    transport_error_from_message, v1_page_url_from_base,
+    transport_error_from_message, v1_page_url_from_base, validate_request_spec_headers,
 };
 use crate::deactivations::BlockingDeactivationsResource;
 #[cfg(feature = "sensitive-diagnostics")]
@@ -24,6 +25,9 @@ use crate::diagnostics::{
     SensitiveTransportErrorStage,
 };
 use crate::messages::{BlockingMessageResource, BlockingMessagesResource};
+use crate::messaging_features::{
+    BlockingConsentsResource, BlockingContactsResource, BlockingGlobalSafeListResource,
+};
 use crate::pricing::BlockingPricingResource;
 use crate::services::{BlockingServiceResource, BlockingServicesResource};
 use crate::short_codes::{BlockingAccountShortCodeResource, BlockingAccountShortCodesResource};
@@ -306,7 +310,7 @@ impl BlockingTwilioClient {
     /// Create an account-scoped handle. Credentials are borrowed and are not
     /// retained by [`BlockingTwilioClient`].
     #[must_use]
-    pub fn account<'a>(&'a self, creds: &'a TwilioCreds) -> BlockingTwilioAccount<'a> {
+    pub fn account<'a>(&'a self, creds: &'a TwilioAuth) -> BlockingTwilioAccount<'a> {
         BlockingTwilioAccount {
             client: self,
             creds,
@@ -329,6 +333,10 @@ impl BlockingTwilioClient {
 
     pub(crate) fn pricing_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
         endpoint_url_from_base(&self.config.pricing, segments)
+    }
+
+    pub(crate) fn accounts_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
+        endpoint_url_from_base(&self.config.accounts, segments)
     }
 
     pub(crate) fn legacy_page_url(
@@ -370,6 +378,7 @@ impl BlockingTwilioClient {
                             ApiFamily::Rest => self.config.rest.clone(),
                             ApiFamily::Messaging => self.config.messaging.clone(),
                             ApiFamily::Pricing => self.config.pricing.clone(),
+                            ApiFamily::Accounts => self.config.accounts.clone(),
                         });
                 let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
                 endpoint_url_from_base(&base, &refs)?
@@ -393,7 +402,7 @@ impl BlockingTwilioClient {
 
     pub(crate) fn send_raw_spec(
         &self,
-        creds: &TwilioCreds,
+        creds: &TwilioAuth,
         spec: RequestSpec,
         options: RequestOptions,
         sensitive_values: &[&str],
@@ -402,10 +411,13 @@ impl BlockingTwilioClient {
         options
             .validate()
             .map_err(|error| BlockingRawAttemptError { error, attempts: 0 })?;
+        validate_request_spec_headers(&spec.headers)
+            .map_err(|error| BlockingRawAttemptError { error, attempts: 0 })?;
         if spec.is_continuation()
             && (options.rest_base_url.is_some()
                 || options.messaging_base_url.is_some()
                 || options.pricing_base_url.is_some()
+                || options.accounts_base_url.is_some()
                 || !options.query.is_empty())
         {
             return Err(BlockingRawAttemptError {
@@ -472,7 +484,7 @@ impl BlockingTwilioClient {
     }
 
     fn build_raw_request(
-        creds: &TwilioCreds,
+        creds: &TwilioAuth,
         spec: &RequestSpec,
         url: &Url,
         options: &RequestOptions,
@@ -482,6 +494,9 @@ impl BlockingTwilioClient {
             .method(spec.method.clone())
             .uri(url.as_str())
             .header(AUTHORIZATION, auth_header.expose().as_str());
+        for (key, value) in &spec.headers {
+            builder = builder.header(key.as_str(), value.as_str());
+        }
         for (key, value) in &options.headers {
             builder = builder.header(key.as_str(), value.as_str());
         }
@@ -626,7 +641,7 @@ impl BlockingTwilioClient {
 
     fn send_raw_once(
         &self,
-        creds: &TwilioCreds,
+        creds: &TwilioAuth,
         context: RawAttemptContext<'_, '_>,
     ) -> Result<ApiResponse<RawResponse>, TwilioError> {
         let method = context.spec.method.as_str();
@@ -729,7 +744,7 @@ impl BlockingTwilioClient {
 #[derive(Clone, Copy)]
 pub struct BlockingTwilioAccount<'a> {
     pub(crate) client: &'a BlockingTwilioClient,
-    pub(crate) creds: &'a TwilioCreds,
+    pub(crate) creds: &'a TwilioAuth,
 }
 
 impl<'a> BlockingTwilioAccount<'a> {
@@ -779,6 +794,36 @@ impl<'a> BlockingTwilioAccount<'a> {
     #[must_use]
     pub fn tollfree_verifications(self) -> BlockingTollfreeVerificationsResource<'a> {
         BlockingTollfreeVerificationsResource::new(self)
+    }
+
+    /// Messaging v1 A2P 10DLC Brand Registrations collection.
+    #[must_use]
+    pub fn a2p_brand_registrations(self) -> BlockingA2PBrandRegistrationsResource<'a> {
+        BlockingA2PBrandRegistrationsResource::new(self)
+    }
+
+    /// One Messaging v1 A2P 10DLC Brand Registration resource.
+    #[must_use]
+    pub fn a2p_brand_registration(self, sid: &'a str) -> BlockingA2PBrandRegistrationResource<'a> {
+        BlockingA2PBrandRegistrationResource::new(self, sid)
+    }
+
+    /// Accounts v1 Contact bulk upsert resources used by Messaging features.
+    #[must_use]
+    pub fn contacts(self) -> BlockingContactsResource<'a> {
+        BlockingContactsResource::new(self)
+    }
+
+    /// Accounts v1 Consent bulk upsert resources used by Messaging features.
+    #[must_use]
+    pub fn consents(self) -> BlockingConsentsResource<'a> {
+        BlockingConsentsResource::new(self)
+    }
+
+    /// Accounts v1 Global Safe List numbers resource.
+    #[must_use]
+    pub fn global_safe_list(self) -> BlockingGlobalSafeListResource<'a> {
+        BlockingGlobalSafeListResource::new(self)
     }
 
     /// One Messaging v1 Toll-free Verification resource.
@@ -875,8 +920,7 @@ impl<'a> BlockingTwilioAccount<'a> {
         let retry = options.retry_or_default();
         let sensitive_owned = owned_sensitive_values(operation.sensitive_values());
         let mut sensitive_refs: Vec<&str> = Vec::with_capacity(sensitive_owned.len() + 2);
-        sensitive_refs.push(self.creds.account_sid());
-        sensitive_refs.push(self.creds.auth_token());
+        sensitive_refs.extend(self.creds.sensitive_values());
         sensitive_refs.extend(sensitive_owned.iter().map(String::as_str));
         let fallback_operation = std::any::type_name::<O>();
         let pre_trace = OperationTrace::new(
@@ -935,6 +979,9 @@ impl<'a> BlockingTwilioAccount<'a> {
         spec: RequestSpec,
         sensitive_values: &[&str],
     ) -> Result<T, TwilioError> {
+        let mut combined_sensitive_values = self.creds.sensitive_values();
+        combined_sensitive_values.extend_from_slice(sensitive_values);
+        let sensitive_values = combined_sensitive_values.as_slice();
         let method = spec.method.as_str().to_owned();
         let trace = OperationTrace::new(spec.operation, 0, None, sensitive_values);
         let raw = match self.client.send_raw_spec(
@@ -971,6 +1018,9 @@ impl<'a> BlockingTwilioAccount<'a> {
         spec: RequestSpec,
         sensitive_values: &[&str],
     ) -> Result<(), TwilioError> {
+        let mut combined_sensitive_values = self.creds.sensitive_values();
+        combined_sensitive_values.extend_from_slice(sensitive_values);
+        let sensitive_values = combined_sensitive_values.as_slice();
         let method = spec.method.as_str().to_owned();
         let trace = OperationTrace::new(spec.operation, 0, None, sensitive_values);
         match self
@@ -998,6 +1048,9 @@ impl<'a> BlockingTwilioAccount<'a> {
         spec: RequestSpec,
         sensitive_values: &[&str],
     ) -> Result<ApiResponse<RawResponse>, TwilioError> {
+        let mut combined_sensitive_values = self.creds.sensitive_values();
+        combined_sensitive_values.extend_from_slice(sensitive_values);
+        let sensitive_values = combined_sensitive_values.as_slice();
         let method = spec.method.as_str().to_owned();
         let trace = OperationTrace::new(spec.operation, 0, None, sensitive_values);
         match self

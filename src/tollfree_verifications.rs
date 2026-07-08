@@ -16,7 +16,7 @@ use crate::client::TwilioAccount;
 #[cfg(feature = "sync")]
 use crate::common::BlockingTwilioPaginator;
 use crate::common::{
-    ApiFamily, DEFAULT_PAGE_SIZE, FormParam, RequestSpec, TwilioCreds, TwilioError, V1PageMeta,
+    ApiFamily, DEFAULT_PAGE_SIZE, FormParam, RequestSpec, TwilioAuth, TwilioError, V1PageMeta,
     V1PageResource, WireV1PageMeta, decode_json_response, has_non_empty, parse_iso8601, push_bool,
     push_sensitive, push_str, redacted_option, request_span, validate_page_size,
     validate_v1_meta_key, validate_v1_next_page_continuation,
@@ -422,8 +422,8 @@ impl<'a> TollfreeVerificationFields<'a> {
         validate_optional_enum("VettingProvider", self.vetting_provider)
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds, sid: Option<&'a str>) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid(), creds.auth_token()];
+    fn sensitive_values(self, creds: &'a TwilioAuth, sid: Option<&'a str>) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_secret()];
         push_sensitive(&mut values, sid);
         push_sensitive(&mut values, self.business_name);
         push_sensitive(&mut values, self.business_website);
@@ -846,7 +846,7 @@ impl<'a> CreateTollfreeVerificationRequest<'a> {
         self.fields.form_params()
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds) -> Vec<&'a str> {
+    fn sensitive_values(self, creds: &'a TwilioAuth) -> Vec<&'a str> {
         self.fields.sensitive_values(creds, None)
     }
 }
@@ -884,7 +884,7 @@ impl<'a> UpdateTollfreeVerificationRequest<'a> {
         self.fields.form_params()
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds, sid: &'a str) -> Vec<&'a str> {
+    fn sensitive_values(self, creds: &'a TwilioAuth, sid: &'a str) -> Vec<&'a str> {
         self.fields.sensitive_values(creds, Some(sid))
     }
 }
@@ -990,8 +990,8 @@ impl<'a> ListTollfreeVerificationsRequest<'a> {
         }
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid(), creds.auth_token()];
+    fn sensitive_values(self, creds: &'a TwilioAuth) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_secret()];
         push_sensitive(&mut values, self.tollfree_phone_number_sid);
         push_sensitive(&mut values, self.external_reference_id);
         values.extend(self.trust_product_sids.iter().copied());
@@ -1467,7 +1467,7 @@ impl<'a> TollfreeVerificationsResource<'a> {
         async move {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
-                self.account.creds.auth_token(),
+                self.account.creds.auth_secret(),
                 next_page_url,
             ];
             let resource = V1PageResource::TollfreeVerifications;
@@ -1658,7 +1658,7 @@ impl<'a> TollfreeVerificationResource<'a> {
     fn sensitive_values(self) -> Vec<&'a str> {
         vec![
             self.account.creds.account_sid(),
-            self.account.creds.auth_token(),
+            self.account.creds.auth_secret(),
             self.sid,
         ]
     }
@@ -1759,7 +1759,7 @@ impl<'a> BlockingTollfreeVerificationsResource<'a> {
         .in_scope(|| {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
-                self.account.creds.auth_token(),
+                self.account.creds.auth_secret(),
                 next_page_url,
             ];
             let resource = V1PageResource::TollfreeVerifications;
@@ -1935,7 +1935,7 @@ impl<'a> BlockingTollfreeVerificationResource<'a> {
     fn sensitive_values(self) -> Vec<&'a str> {
         vec![
             self.account.creds.account_sid(),
-            self.account.creds.auth_token(),
+            self.account.creds.auth_secret(),
             self.sid,
         ]
     }

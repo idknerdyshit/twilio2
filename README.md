@@ -12,14 +12,23 @@ It covers:
 - Messaging Services: create, fetch, list, update, pagination, and delete
 - Service sender subresources: PhoneNumbers, ShortCodes, AlphaSenders,
   ChannelSenders, and DestinationAlphaSenders
+- A2P 10DLC Brand Registrations, Brand Vettings, service Usa2p campaign
+  registrations, and Usa2p usecase discovery
 - Messaging v1 Toll-free Verifications: create, fetch, list, update, and delete
+- Accounts v1 Messaging feature APIs: Contacts bulk upsert, Consents bulk
+  upsert, and Global Safe List number add/check/remove
+- Compliance Toolkit message controls exposed on Programmable Messaging
+  endpoints, including message intent
 - Pricing v1 Messaging Countries: list, pagination, and per-country SMS prices
 
 The client stores only shared transport state and parsed base URLs. Account SID
-and Auth Token values are passed through `TwilioCreds` to an account-scoped
-handle; both credential values are redacted from `Debug` output. API-key authentication,
-inbound webhook parsing, signature verification, A2P Compliance resources, and
-higher-level provider traits are intentionally outside this crate.
+and Auth Token values, or Account SID plus API Key SID/Secret values, are passed
+through `TwilioAuth` to an account-scoped handle; credential values are redacted
+from `Debug` output. Separate Twilio products such as Content, Conversations,
+Verify, WhatsApp Business Platform, and RCS product APIs are not folded into
+this crate unless a parameter or endpoint is exposed through Programmable
+Messaging. Inbound webhook parsing, signature verification, and higher-level
+provider traits remain intentionally outside this crate.
 
 Custom base URLs must use HTTPS. If a custom proxy is used for Messaging v1
 pagination, it must rewrite Twilio's absolute `next_page_url` values to the
@@ -63,16 +72,21 @@ Version `0.3` uses account/resource builders throughout. Construct a client with
 `TwilioClient::from_config`, `TwilioClient::from_http_client`, or
 `TwilioClient::try_with_config`, then call resource methods such as
 `client.account(&creds).messages().create(...)`. `TwilioClient` never stores
-credentials. `TwilioCreds` owns redacted credential buffers that are zeroized
+credentials. `TwilioAuth` owns redacted credential buffers that are zeroized
 when dropped; caller-owned source strings and transport-created header copies
 remain outside that guarantee:
 
 ```rust,no_run
-use twilio2::{CreateMessageRequest, ListMessagesRequest, TwilioClient, TwilioCreds};
+use twilio2::{CreateMessageRequest, ListMessagesRequest, TwilioClient, TwilioAuth};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let client = TwilioClient::from_config(Default::default())?;
-let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
+let creds = TwilioAuth::auth_token("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
+let api_key_creds = TwilioAuth::api_key(
+    "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "SKxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "secret",
+);
 
 let request = CreateMessageRequest::new("+15551234567")
     .from("+15557654321")
@@ -90,6 +104,7 @@ if let Some(sid) = message.sid {
     println!("{sid}");
 }
 # let _ = all;
+# let _ = api_key_creds;
 # Ok(())
 # }
 ```
@@ -97,11 +112,11 @@ if let Some(sid) = message.sid {
 The blocking API mirrors the async API and removes only `.await`:
 
 ```rust,no_run
-use twilio2::{BlockingTwilioClient, CreateMessageRequest, TwilioCreds};
+use twilio2::{BlockingTwilioClient, CreateMessageRequest, TwilioAuth};
 
 fn example() -> Result<(), Box<dyn std::error::Error>> {
 let client = BlockingTwilioClient::from_config(Default::default())?;
-let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
+let creds = TwilioAuth::auth_token("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 
 let request = CreateMessageRequest::new("+15551234567")
     .from("+15557654321")
@@ -119,11 +134,11 @@ Ok(())
 Messaging Services use Twilio's Messaging v1 API:
 
 ```rust,no_run
-use twilio2::{CreateServiceRequest, HttpMethod, TwilioClient, TwilioCreds};
+use twilio2::{CreateServiceRequest, HttpMethod, TwilioClient, TwilioAuth};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 # let client = TwilioClient::from_config(Default::default())?;
-# let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
+# let creds = TwilioAuth::auth_token("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 let service = client
     .account(&creds)
     .services()
@@ -141,11 +156,11 @@ let service = client
 Pricing Messaging Countries use Twilio's Pricing v1 API:
 
 ```rust,no_run
-use twilio2::{ListPricingMessagingCountriesRequest, TwilioClient, TwilioCreds};
+use twilio2::{ListPricingMessagingCountriesRequest, TwilioClient, TwilioAuth};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 # let client = TwilioClient::from_config(Default::default())?;
-# let creds = TwilioCreds::new("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
+# let creds = TwilioAuth::auth_token("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 let countries = client
     .account(&creds)
     .pricing()
@@ -182,7 +197,8 @@ use twilio2::{TwilioClient, TwilioClientConfig};
 let config = TwilioClientConfig::new()
     .rest_base_url("https://proxy.example.com/twilio-rest")
     .messaging_base_url("https://proxy.example.com/twilio-messaging/v1")
-    .pricing_base_url("https://proxy.example.com/twilio-pricing/v1");
+    .pricing_base_url("https://proxy.example.com/twilio-pricing/v1")
+    .accounts_base_url("https://proxy.example.com/twilio-accounts/v1");
 let client = TwilioClient::from_config_and_http_client(config, reqwest::Client::new())?;
 # let _ = client;
 # Ok(())
@@ -216,7 +232,8 @@ Each request runs inside a `twilio2.request` span with the operation name and HT
 method. Diagnostics intentionally avoid auth tokens, `Authorization` headers,
 full URLs, phone numbers, message bodies, SIDs, page URLs/URIs, sender IDs,
 media URLs, content variables, persistent actions, tags, callback URLs, and
-friendly names.
+friendly names, API keys, contact IDs, consent records, Safe List numbers, A2P
+campaign text, opt-in/out/help text, and message samples.
 
 Transport/decode/API diagnostics are sanitized before being logged or stored in
 `TwilioError`: known sensitive request values are removed, Basic/Bearer

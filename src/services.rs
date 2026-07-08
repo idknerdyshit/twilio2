@@ -10,13 +10,17 @@ use tracing::Instrument as _;
 use url::Url;
 
 #[cfg(feature = "sync")]
+use crate::a2p::{BlockingServiceUsa2pResource, BlockingServiceUsa2pUsecasesResource};
+#[cfg(feature = "async")]
+use crate::a2p::{ServiceUsa2pResource, ServiceUsa2pUsecasesResource};
+#[cfg(feature = "sync")]
 use crate::blocking_client::BlockingTwilioAccount;
 #[cfg(feature = "async")]
 use crate::client::TwilioAccount;
 #[cfg(feature = "sync")]
 use crate::common::BlockingTwilioPaginator;
 use crate::common::{
-    ApiFamily, DEFAULT_PAGE_SIZE, FormEnum, FormParam, RequestSpec, TwilioCreds, TwilioError,
+    ApiFamily, DEFAULT_PAGE_SIZE, FormEnum, FormParam, RequestSpec, TwilioAuth, TwilioError,
     V1PageMeta, V1PageResource, WireV1PageMeta, decode_json_response, has_non_empty, parse_iso8601,
     push_bool, push_enum, push_sensitive, push_str, push_u32, redacted_option, request_span,
     validate_page_size, validate_v1_meta_key, validate_v1_next_page_continuation,
@@ -178,12 +182,8 @@ impl<'a> ServiceFields<'a> {
         params
     }
 
-    fn sensitive_values(
-        self,
-        creds: &'a TwilioCreds,
-        service_sid: Option<&'a str>,
-    ) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid(), creds.auth_token()];
+    fn sensitive_values(self, creds: &'a TwilioAuth, service_sid: Option<&'a str>) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_secret()];
         push_sensitive(&mut values, service_sid);
         push_sensitive(&mut values, self.friendly_name);
         push_string_setting_sensitive(&mut values, self.inbound_request_url);
@@ -362,7 +362,7 @@ impl<'a> CreateServiceRequest<'a> {
         self.fields.form_params()
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds) -> Vec<&'a str> {
+    fn sensitive_values(self, creds: &'a TwilioAuth) -> Vec<&'a str> {
         self.fields.sensitive_values(creds, None)
     }
 }
@@ -395,7 +395,7 @@ impl<'a> UpdateServiceRequest<'a> {
         self.fields.form_params()
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds, service_sid: &'a str) -> Vec<&'a str> {
+    fn sensitive_values(self, creds: &'a TwilioAuth, service_sid: &'a str) -> Vec<&'a str> {
         self.fields.sensitive_values(creds, Some(service_sid))
     }
 }
@@ -440,8 +440,8 @@ impl<'a> ListServicesRequest<'a> {
         apply_v1_page_query(url, self.page_size, self.page, self.page_token);
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid(), creds.auth_token()];
+    fn sensitive_values(self, creds: &'a TwilioAuth) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_secret()];
         push_sensitive(&mut values, self.page_token);
         values
     }
@@ -487,8 +487,8 @@ impl<'a> ListServiceSubresourcesRequest<'a> {
         apply_v1_page_query(url, self.page_size, self.page, self.page_token);
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds, service_sid: &'a str) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid(), creds.auth_token(), service_sid];
+    fn sensitive_values(self, creds: &'a TwilioAuth, service_sid: &'a str) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_secret(), service_sid];
         push_sensitive(&mut values, self.page_token);
         values
     }
@@ -553,8 +553,8 @@ impl<'a> ListDestinationAlphaSendersRequest<'a> {
         }
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds, service_sid: &'a str) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid(), creds.auth_token(), service_sid];
+    fn sensitive_values(self, creds: &'a TwilioAuth, service_sid: &'a str) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_secret(), service_sid];
         push_sensitive(&mut values, self.iso_country_code);
         push_sensitive(&mut values, self.page_token);
         values
@@ -600,10 +600,10 @@ impl<'a> CreateServicePhoneNumberRequest<'a> {
         params
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds, service_sid: &'a str) -> Vec<&'a str> {
+    fn sensitive_values(self, creds: &'a TwilioAuth, service_sid: &'a str) -> Vec<&'a str> {
         vec![
             creds.account_sid(),
-            creds.auth_token(),
+            creds.auth_secret(),
             service_sid,
             self.phone_number_sid,
         ]
@@ -631,10 +631,10 @@ impl<'a> CreateServiceShortCodeRequest<'a> {
         params
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds, service_sid: &'a str) -> Vec<&'a str> {
+    fn sensitive_values(self, creds: &'a TwilioAuth, service_sid: &'a str) -> Vec<&'a str> {
         vec![
             creds.account_sid(),
-            creds.auth_token(),
+            creds.auth_secret(),
             service_sid,
             self.short_code_sid,
         ]
@@ -662,10 +662,10 @@ impl<'a> CreateAlphaSenderRequest<'a> {
         params
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds, service_sid: &'a str) -> Vec<&'a str> {
+    fn sensitive_values(self, creds: &'a TwilioAuth, service_sid: &'a str) -> Vec<&'a str> {
         vec![
             creds.account_sid(),
-            creds.auth_token(),
+            creds.auth_secret(),
             service_sid,
             self.alpha_sender,
         ]
@@ -693,10 +693,10 @@ impl<'a> CreateChannelSenderRequest<'a> {
         params
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds, service_sid: &'a str) -> Vec<&'a str> {
+    fn sensitive_values(self, creds: &'a TwilioAuth, service_sid: &'a str) -> Vec<&'a str> {
         vec![
             creds.account_sid(),
-            creds.auth_token(),
+            creds.auth_secret(),
             service_sid,
             self.sid,
         ]
@@ -735,10 +735,10 @@ impl<'a> CreateDestinationAlphaSenderRequest<'a> {
         params
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds, service_sid: &'a str) -> Vec<&'a str> {
+    fn sensitive_values(self, creds: &'a TwilioAuth, service_sid: &'a str) -> Vec<&'a str> {
         let mut values = vec![
             creds.account_sid(),
-            creds.auth_token(),
+            creds.auth_secret(),
             service_sid,
             self.alpha_sender,
         ];
@@ -1422,7 +1422,7 @@ impl<'a> ServicesResource<'a> {
         async move {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
-                self.account.creds.auth_token(),
+                self.account.creds.auth_secret(),
                 next_page_url,
             ];
             let resource = V1PageResource::Services;
@@ -1508,6 +1508,14 @@ pub struct ServiceResource<'a> {
 impl<'a> ServiceResource<'a> {
     pub(crate) fn new(account: TwilioAccount<'a>, sid: &'a str) -> Self {
         Self { account, sid }
+    }
+
+    pub(crate) fn account(self) -> TwilioAccount<'a> {
+        self.account
+    }
+
+    pub(crate) fn sid(self) -> &'a str {
+        self.sid
     }
 
     /// `GET /Services/{Sid}`.
@@ -1612,6 +1620,18 @@ impl<'a> ServiceResource<'a> {
         ServiceDestinationAlphaSendersResource { service: self }
     }
 
+    /// A2P 10DLC `Usa2p` Compliance resources for this Messaging Service.
+    #[must_use]
+    pub fn usa2p(self) -> ServiceUsa2pResource<'a> {
+        ServiceUsa2pResource::new(self)
+    }
+
+    /// A2P 10DLC use case lookup for this Messaging Service.
+    #[must_use]
+    pub fn usa2p_usecases(self) -> ServiceUsa2pUsecasesResource<'a> {
+        ServiceUsa2pUsecasesResource::new(self)
+    }
+
     fn service_url(self) -> Result<Url, TwilioError> {
         self.account
             .client
@@ -1650,7 +1670,7 @@ impl<'a> ServiceResource<'a> {
     fn sensitive_values(self) -> Vec<&'a str> {
         vec![
             self.account.creds.account_sid(),
-            self.account.creds.auth_token(),
+            self.account.creds.auth_secret(),
             self.sid,
         ]
     }
@@ -1737,7 +1757,7 @@ macro_rules! impl_sender_resource {
                 async move {
                     let sensitive_values = vec![
                         self.service.account.creds.account_sid(),
-                        self.service.account.creds.auth_token(),
+                        self.service.account.creds.auth_secret(),
                         self.service.sid,
                         sid,
                     ];
@@ -1810,7 +1830,7 @@ macro_rules! impl_sender_resource {
                 async move {
                     let sensitive_values = vec![
                         self.service.account.creds.account_sid(),
-                        self.service.account.creds.auth_token(),
+                        self.service.account.creds.auth_secret(),
                         self.service.sid,
                         next_page_url,
                     ];
@@ -1853,7 +1873,7 @@ macro_rules! impl_sender_resource {
                 async move {
                     let sensitive_values = vec![
                         self.service.account.creds.account_sid(),
-                        self.service.account.creds.auth_token(),
+                        self.service.account.creds.auth_secret(),
                         self.service.sid,
                         sid,
                     ];
@@ -2063,7 +2083,7 @@ impl<'a> ServiceDestinationAlphaSendersResource<'a> {
         async move {
             let sensitive_values = vec![
                 self.service.account.creds.account_sid(),
-                self.service.account.creds.auth_token(),
+                self.service.account.creds.auth_secret(),
                 self.service.sid,
                 sid,
             ];
@@ -2141,7 +2161,7 @@ impl<'a> ServiceDestinationAlphaSendersResource<'a> {
         async move {
             let sensitive_values = vec![
                 self.service.account.creds.account_sid(),
-                self.service.account.creds.auth_token(),
+                self.service.account.creds.auth_secret(),
                 self.service.sid,
                 next_page_url,
             ];
@@ -2183,7 +2203,7 @@ impl<'a> ServiceDestinationAlphaSendersResource<'a> {
         async move {
             let sensitive_values = vec![
                 self.service.account.creds.account_sid(),
-                self.service.account.creds.auth_token(),
+                self.service.account.creds.auth_secret(),
                 self.service.sid,
                 sid,
             ];
@@ -2384,7 +2404,7 @@ impl<'a> BlockingServicesResource<'a> {
         .in_scope(|| {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
-                self.account.creds.auth_token(),
+                self.account.creds.auth_secret(),
                 next_page_url,
             ];
             let resource = V1PageResource::Services;
@@ -2458,6 +2478,14 @@ pub struct BlockingServiceResource<'a> {
 impl<'a> BlockingServiceResource<'a> {
     pub(crate) fn new(account: BlockingTwilioAccount<'a>, sid: &'a str) -> Self {
         Self { account, sid }
+    }
+
+    pub(crate) fn account(self) -> BlockingTwilioAccount<'a> {
+        self.account
+    }
+
+    pub(crate) fn sid(self) -> &'a str {
+        self.sid
     }
 
     /// `GET /Services/{Sid}`.
@@ -2555,6 +2583,18 @@ impl<'a> BlockingServiceResource<'a> {
         BlockingServiceDestinationAlphaSendersResource { service: self }
     }
 
+    /// A2P 10DLC `Usa2p` Compliance resources for this Messaging Service.
+    #[must_use]
+    pub fn usa2p(self) -> BlockingServiceUsa2pResource<'a> {
+        BlockingServiceUsa2pResource::new(self)
+    }
+
+    /// A2P 10DLC use case lookup for this Messaging Service.
+    #[must_use]
+    pub fn usa2p_usecases(self) -> BlockingServiceUsa2pUsecasesResource<'a> {
+        BlockingServiceUsa2pUsecasesResource::new(self)
+    }
+
     fn service_url(self) -> Result<Url, TwilioError> {
         self.account
             .client
@@ -2593,7 +2633,7 @@ impl<'a> BlockingServiceResource<'a> {
     fn sensitive_values(self) -> Vec<&'a str> {
         vec![
             self.account.creds.account_sid(),
-            self.account.creds.auth_token(),
+            self.account.creds.auth_secret(),
             self.sid,
         ]
     }
@@ -2666,7 +2706,7 @@ macro_rules! impl_blocking_sender_resource {
                 .in_scope(|| {
                     let sensitive_values = vec![
                         self.service.account.creds.account_sid(),
-                        self.service.account.creds.auth_token(),
+                        self.service.account.creds.auth_secret(),
                         self.service.sid,
                         sid,
                     ];
@@ -2735,7 +2775,7 @@ macro_rules! impl_blocking_sender_resource {
                 .in_scope(|| {
                     let sensitive_values = vec![
                         self.service.account.creds.account_sid(),
-                        self.service.account.creds.auth_token(),
+                        self.service.account.creds.auth_secret(),
                         self.service.sid,
                         next_page_url,
                     ];
@@ -2776,7 +2816,7 @@ macro_rules! impl_blocking_sender_resource {
                 .in_scope(|| {
                     let sensitive_values = vec![
                         self.service.account.creds.account_sid(),
-                        self.service.account.creds.auth_token(),
+                        self.service.account.creds.auth_secret(),
                         self.service.sid,
                         sid,
                     ];
@@ -2979,7 +3019,7 @@ impl<'a> BlockingServiceDestinationAlphaSendersResource<'a> {
         .in_scope(|| {
             let sensitive_values = vec![
                 self.service.account.creds.account_sid(),
-                self.service.account.creds.auth_token(),
+                self.service.account.creds.auth_secret(),
                 self.service.sid,
                 sid,
             ];
@@ -3053,7 +3093,7 @@ impl<'a> BlockingServiceDestinationAlphaSendersResource<'a> {
         .in_scope(|| {
             let sensitive_values = vec![
                 self.service.account.creds.account_sid(),
-                self.service.account.creds.auth_token(),
+                self.service.account.creds.auth_secret(),
                 self.service.sid,
                 next_page_url,
             ];
@@ -3093,7 +3133,7 @@ impl<'a> BlockingServiceDestinationAlphaSendersResource<'a> {
         .in_scope(|| {
             let sensitive_values = vec![
                 self.service.account.creds.account_sid(),
-                self.service.account.creds.auth_token(),
+                self.service.account.creds.auth_secret(),
                 self.service.sid,
                 sid,
             ];

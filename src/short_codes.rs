@@ -14,7 +14,7 @@ use crate::client::TwilioAccount;
 #[cfg(feature = "sync")]
 use crate::common::BlockingTwilioPaginator;
 use crate::common::{
-    ApiFamily, DEFAULT_PAGE_SIZE, FormParam, LegacyPageResource, RequestSpec, TwilioCreds,
+    ApiFamily, DEFAULT_PAGE_SIZE, FormParam, LegacyPageResource, RequestSpec, TwilioAuth,
     TwilioError, decode_json_response, non_empty, parse_rfc2822, push_enum, push_sensitive,
     push_str, redacted_option, request_span, validate_legacy_next_page_continuation,
     validate_page_size,
@@ -51,8 +51,8 @@ impl<'a> AccountShortCodeFields<'a> {
         params
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds, sid: &'a str) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid(), creds.auth_token(), sid];
+    fn sensitive_values(self, creds: &'a TwilioAuth, sid: &'a str) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_secret(), sid];
         push_sensitive(&mut values, self.friendly_name);
         push_sensitive(&mut values, self.api_version);
         push_string_setting_sensitive(&mut values, self.sms_url);
@@ -148,8 +148,8 @@ impl<'a> ListAccountShortCodesRequest<'a> {
         }
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds) -> Vec<&'a str> {
-        let mut values = vec![creds.account_sid(), creds.auth_token()];
+    fn sensitive_values(self, creds: &'a TwilioAuth) -> Vec<&'a str> {
+        let mut values = vec![creds.account_sid(), creds.auth_secret()];
         push_sensitive(&mut values, self.friendly_name);
         push_sensitive(&mut values, self.short_code);
         push_sensitive(&mut values, self.page_token);
@@ -230,7 +230,7 @@ impl<'a> UpdateAccountShortCodeRequest<'a> {
         self.fields.form_params()
     }
 
-    fn sensitive_values(self, creds: &'a TwilioCreds, sid: &'a str) -> Vec<&'a str> {
+    fn sensitive_values(self, creds: &'a TwilioAuth, sid: &'a str) -> Vec<&'a str> {
         self.fields.sensitive_values(creds, sid)
     }
 }
@@ -441,7 +441,7 @@ impl<'a> AccountShortCodesResource<'a> {
         async move {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
-                self.account.creds.auth_token(),
+                self.account.creds.auth_secret(),
                 next_page_uri,
             ];
             let url = self.account.client.legacy_page_url(
@@ -631,7 +631,7 @@ impl<'a> AccountShortCodeResource<'a> {
     fn sensitive_values(self) -> Vec<&'a str> {
         vec![
             self.account.creds.account_sid(),
-            self.account.creds.auth_token(),
+            self.account.creds.auth_secret(),
             self.sid,
         ]
     }
@@ -701,7 +701,7 @@ impl<'a> BlockingAccountShortCodesResource<'a> {
         .in_scope(|| {
             let sensitive_values = vec![
                 self.account.creds.account_sid(),
-                self.account.creds.auth_token(),
+                self.account.creds.auth_secret(),
                 next_page_uri,
             ];
             let url = self.account.client.legacy_page_url(
@@ -875,7 +875,7 @@ impl<'a> BlockingAccountShortCodeResource<'a> {
     fn sensitive_values(self) -> Vec<&'a str> {
         vec![
             self.account.creds.account_sid(),
-            self.account.creds.auth_token(),
+            self.account.creds.auth_secret(),
             self.sid,
         ]
     }

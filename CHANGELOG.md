@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [0.3.1] - 2026-07-08
+
+### Changed
+
+- Refactor Twilio client message and pagination handling. (cab3c1d)
+- Refactor Twilio client pagination and message handling. (03093c0)
+- Ignore nested DS_Store files. (f4e089c)
+
 ## [0.3.0] - 2026-07-05
 
 ### Changed

@@ -31,11 +31,11 @@ pub(crate) const TRACE_TARGET: &str = "twilio2::trace";
 /// Default Twilio 2010 REST API root, with no trailing slash.
 pub const DEFAULT_REST_BASE_URL: &str = "https://api.twilio.com";
 
-/// Default Twilio Messaging v1 API root, with no trailing slash.
-pub const DEFAULT_MESSAGING_BASE_URL: &str = "https://messaging.twilio.com/v1";
+/// Default Twilio Messaging API product root, with no trailing slash.
+pub const DEFAULT_MESSAGING_BASE_URL: &str = "https://messaging.twilio.com";
 
-/// Default Twilio Pricing v1 API root, with no trailing slash.
-pub const DEFAULT_PRICING_BASE_URL: &str = "https://pricing.twilio.com/v1";
+/// Default Twilio Pricing API product root, with no trailing slash.
+pub const DEFAULT_PRICING_BASE_URL: &str = "https://pricing.twilio.com";
 
 /// Default Twilio Accounts v1 API root, with no trailing slash.
 pub const DEFAULT_ACCOUNTS_BASE_URL: &str = "https://accounts.twilio.com/v1";
@@ -61,8 +61,8 @@ pub enum TwilioError {
     InvalidResponseMetadata(String),
     #[error("http transport error: {0}")]
     Transport(String),
-    /// Non-2xx response. `status` is the HTTP code; `body` is truncated
-    /// diagnostic text and sanitized before being returned.
+    /// Non-2xx response. `status` is the HTTP code; `body` is a redacted
+    /// length-only diagnostic and never contains server-provided response text.
     #[error("twilio api error: status {status}")]
     Api { status: u16, body: String },
     #[error("malformed twilio response: {0}")]
@@ -292,11 +292,13 @@ impl TwilioConfig {
             config = config.rest_base_url(rest_base_url);
         }
         if let Some(messaging_base_url) = non_empty_env(messaging_base_url) {
-            normalize_base_url(&messaging_base_url).map_err(TwilioError::InvalidBaseUrl)?;
+            normalize_product_root_base_url(&messaging_base_url)
+                .map_err(TwilioError::InvalidBaseUrl)?;
             config = config.messaging_base_url(messaging_base_url);
         }
         if let Some(pricing_base_url) = non_empty_env(pricing_base_url) {
-            normalize_base_url(&pricing_base_url).map_err(TwilioError::InvalidBaseUrl)?;
+            normalize_product_root_base_url(&pricing_base_url)
+                .map_err(TwilioError::InvalidBaseUrl)?;
             config = config.pricing_base_url(pricing_base_url);
         }
         if let Some(accounts_base_url) = non_empty_env(accounts_base_url) {
@@ -313,14 +315,14 @@ impl TwilioConfig {
         self
     }
 
-    /// Set the Twilio Messaging v1 API base URL.
+    /// Set the Twilio Messaging API product root.
     #[must_use]
     pub fn messaging_base_url(mut self, value: impl Into<String>) -> Self {
         self.messaging = value.into();
         self
     }
 
-    /// Set the Twilio Pricing v1 API base URL.
+    /// Set the Twilio Pricing API product root.
     #[must_use]
     pub fn pricing_base_url(mut self, value: impl Into<String>) -> Self {
         self.pricing = value.into();
@@ -484,14 +486,14 @@ impl TwilioClientConfig {
         self
     }
 
-    /// Set the Twilio Messaging v1 API base URL.
+    /// Set the Twilio Messaging API product root.
     #[must_use]
     pub fn messaging_base_url(mut self, value: impl Into<String>) -> Self {
         self.base_urls = self.base_urls.messaging_base_url(value);
         self
     }
 
-    /// Set the Twilio Pricing v1 API base URL.
+    /// Set the Twilio Pricing API product root.
     #[must_use]
     pub fn pricing_base_url(mut self, value: impl Into<String>) -> Self {
         self.base_urls = self.base_urls.pricing_base_url(value);
@@ -567,9 +569,10 @@ impl ParsedConfig {
     pub(crate) fn parse(config: &TwilioConfig) -> Result<Self, TwilioError> {
         Ok(Self {
             rest: normalize_base_url(&config.rest).map_err(TwilioError::InvalidBaseUrl)?,
-            messaging: normalize_base_url(&config.messaging)
+            messaging: normalize_product_root_base_url(&config.messaging)
                 .map_err(TwilioError::InvalidBaseUrl)?,
-            pricing: normalize_base_url(&config.pricing).map_err(TwilioError::InvalidBaseUrl)?,
+            pricing: normalize_product_root_base_url(&config.pricing)
+                .map_err(TwilioError::InvalidBaseUrl)?,
             accounts: normalize_base_url(&config.accounts).map_err(TwilioError::InvalidBaseUrl)?,
         })
     }
@@ -654,10 +657,16 @@ fn owned_form_pairs(params: Vec<FormParam>) -> Vec<(String, String)> {
 pub enum ApiFamily {
     /// Twilio 2010 REST API rooted at [`DEFAULT_REST_BASE_URL`].
     Rest,
-    /// Twilio Messaging v1 API rooted at [`DEFAULT_MESSAGING_BASE_URL`].
-    Messaging,
-    /// Twilio Pricing v1 API rooted at [`DEFAULT_PRICING_BASE_URL`].
-    Pricing,
+    /// Twilio Messaging v1 API under [`DEFAULT_MESSAGING_BASE_URL`].
+    MessagingV1,
+    /// Twilio Messaging v2 API under [`DEFAULT_MESSAGING_BASE_URL`].
+    MessagingV2,
+    /// Twilio Messaging v3 API under [`DEFAULT_MESSAGING_BASE_URL`].
+    MessagingV3,
+    /// Twilio Pricing v1 API under [`DEFAULT_PRICING_BASE_URL`].
+    PricingV1,
+    /// Twilio Pricing v2 API under [`DEFAULT_PRICING_BASE_URL`].
+    PricingV2,
     /// Twilio Accounts v1 API rooted at [`DEFAULT_ACCOUNTS_BASE_URL`].
     Accounts,
 }
@@ -794,14 +803,14 @@ impl RequestOptions {
         Ok(self)
     }
 
-    /// Override the Messaging API base URL for this request.
+    /// Override the Messaging API product root for this request.
     #[must_use]
     pub fn messaging_base_url(mut self, value: impl Into<String>) -> Self {
         self.messaging_base_url = Some(value.into());
         self
     }
 
-    /// Override the Messaging API base URL for this request, validating it now.
+    /// Override the Messaging API product root for this request, validating it now.
     ///
     /// # Errors
     ///
@@ -809,19 +818,19 @@ impl RequestOptions {
     /// HTTPS base URL accepted by this crate.
     pub fn try_messaging_base_url(mut self, value: impl AsRef<str>) -> Result<Self, TwilioError> {
         let value = value.as_ref();
-        normalize_base_url(value).map_err(TwilioError::InvalidBaseUrl)?;
+        normalize_product_root_base_url(value).map_err(TwilioError::InvalidBaseUrl)?;
         self.messaging_base_url = Some(value.to_owned());
         Ok(self)
     }
 
-    /// Override the Pricing API base URL for this request.
+    /// Override the Pricing API product root for this request.
     #[must_use]
     pub fn pricing_base_url(mut self, value: impl Into<String>) -> Self {
         self.pricing_base_url = Some(value.into());
         self
     }
 
-    /// Override the Pricing API base URL for this request, validating it now.
+    /// Override the Pricing API product root for this request, validating it now.
     ///
     /// # Errors
     ///
@@ -829,7 +838,7 @@ impl RequestOptions {
     /// HTTPS base URL accepted by this crate.
     pub fn try_pricing_base_url(mut self, value: impl AsRef<str>) -> Result<Self, TwilioError> {
         let value = value.as_ref();
-        normalize_base_url(value).map_err(TwilioError::InvalidBaseUrl)?;
+        normalize_product_root_base_url(value).map_err(TwilioError::InvalidBaseUrl)?;
         self.pricing_base_url = Some(value.to_owned());
         Ok(self)
     }
@@ -967,16 +976,16 @@ impl RequestOptions {
                 .map(normalize_base_url)
                 .transpose()
                 .map_err(TwilioError::InvalidBaseUrl),
-            ApiFamily::Messaging => self
+            ApiFamily::MessagingV1 | ApiFamily::MessagingV2 | ApiFamily::MessagingV3 => self
                 .messaging_base_url
                 .as_deref()
-                .map(normalize_base_url)
+                .map(normalize_product_root_base_url)
                 .transpose()
                 .map_err(TwilioError::InvalidBaseUrl),
-            ApiFamily::Pricing => self
+            ApiFamily::PricingV1 | ApiFamily::PricingV2 => self
                 .pricing_base_url
                 .as_deref()
-                .map(normalize_base_url)
+                .map(normalize_product_root_base_url)
                 .transpose()
                 .map_err(TwilioError::InvalidBaseUrl),
             ApiFamily::Accounts => self
@@ -1098,6 +1107,7 @@ pub(crate) enum RequestTarget {
 pub(crate) enum RequestBody {
     Empty,
     Form(Vec<(String, String)>),
+    Json(Vec<u8>),
 }
 
 /// A fully resolved Twilio request description consumed by the executor.
@@ -1193,7 +1203,7 @@ impl RequestSpec {
     #[must_use]
     pub fn form_param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         match &mut self.body {
-            RequestBody::Empty => {
+            RequestBody::Empty | RequestBody::Json(_) => {
                 self.body = RequestBody::Form(vec![(key.into(), value.into())]);
             }
             RequestBody::Form(params) => params.push((key.into(), value.into())),
@@ -1204,6 +1214,13 @@ impl RequestSpec {
     pub(crate) fn form_params(mut self, params: Vec<FormParam>) -> Self {
         self.body = RequestBody::Form(owned_form_pairs(params));
         self
+    }
+
+    pub(crate) fn json_body<T: serde::Serialize>(mut self, value: &T) -> Result<Self, TwilioError> {
+        let body = serde_json::to_vec(value)
+            .map_err(|error| TwilioError::InvalidRequest(format!("invalid JSON body: {error}")))?;
+        self.body = RequestBody::Json(body);
+        Ok(self)
     }
 
     pub(crate) fn is_safe_method(&self) -> bool {
@@ -1229,6 +1246,7 @@ impl fmt::Debug for RequestSpec {
         let body = match &self.body {
             RequestBody::Empty => "empty".to_owned(),
             RequestBody::Form(params) => format!("form[{REDACTED}; {}]", params.len()),
+            RequestBody::Json(body) => format!("json[{REDACTED}; {}]", body.len()),
         };
         f.debug_struct("RequestSpec")
             .field("family", &self.family)
@@ -1651,18 +1669,18 @@ impl std::fmt::Debug for TwilioMediaContent {
 
 pub(crate) fn api_error_from_text(
     status: u16,
-    body: String,
-    sensitive_values: &[&str],
+    body: &str,
+    _sensitive_values: &[&str],
 ) -> TwilioError {
-    let body = sanitize_diagnostic(body, sensitive_values);
+    let body_len = body.len();
     tracing::warn!(
         http.status_code = status,
-        response.body_len = body.len(),
+        response.body_len = body_len,
         "twilio api error"
     );
     TwilioError::Api {
         status,
-        body: truncate(body),
+        body: format!("<redacted response body; {body_len} bytes>"),
     }
 }
 
@@ -1734,11 +1752,7 @@ pub(crate) fn api_error_from_body(
     body: &[u8],
     sensitive_values: &[&str],
 ) -> TwilioError {
-    api_error_from_text(
-        status,
-        String::from_utf8_lossy(body).into_owned(),
-        sensitive_values,
-    )
+    api_error_from_text(status, &String::from_utf8_lossy(body), sensitive_values)
 }
 
 #[cfg(feature = "async")]
@@ -1747,7 +1761,7 @@ pub(crate) fn api_error_from_body_read_error(
     error: &reqwest::Error,
     sensitive_values: &[&str],
 ) -> TwilioError {
-    api_error_from_text(status, reqwest_error_message(error), sensitive_values)
+    api_error_from_text(status, &reqwest_error_message(error), sensitive_values)
 }
 
 #[cfg(feature = "sync")]
@@ -1756,7 +1770,7 @@ pub(crate) fn api_error_from_read_error_message(
     message: impl Into<String>,
     sensitive_values: &[&str],
 ) -> TwilioError {
-    api_error_from_text(status, message.into(), sensitive_values)
+    api_error_from_text(status, &message.into(), sensitive_values)
 }
 
 #[cfg(feature = "async")]
@@ -1791,21 +1805,6 @@ fn reqwest_error_message(e: &reqwest::Error) -> String {
         }
     }
     msg
-}
-
-fn truncate(s: String) -> String {
-    if s.len() > MAX_DIAGNOSTIC_BODY_BYTES {
-        let mut end = MAX_DIAGNOSTIC_BODY_BYTES;
-        while !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        let mut t = s;
-        t.truncate(end);
-        t.push('…');
-        t
-    } else {
-        s
-    }
 }
 
 macro_rules! trace_debug {
@@ -2087,6 +2086,32 @@ pub(crate) fn normalize_base_url(raw: &str) -> Result<Url, String> {
     Ok(url)
 }
 
+pub(crate) fn normalize_product_root_base_url(raw: &str) -> Result<Url, String> {
+    let url = normalize_base_url(raw)?;
+    if url
+        .path_segments()
+        .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back())
+        .is_some_and(|segment| matches!(segment.to_ascii_lowercase().as_str(), "v1" | "v2" | "v3"))
+    {
+        return Err(
+            "Messaging and Pricing base URLs must be product roots, not versioned API roots"
+                .to_owned(),
+        );
+    }
+    Ok(url)
+}
+
+pub(crate) fn endpoint_url_from_versioned_base(
+    base_url: &Url,
+    version: &'static str,
+    segments: &[&str],
+) -> Result<Url, TwilioError> {
+    let mut versioned = Vec::with_capacity(segments.len() + 1);
+    versioned.push(version);
+    versioned.extend_from_slice(segments);
+    endpoint_url_from_base(base_url, &versioned)
+}
+
 pub(crate) fn endpoint_url_from_base(
     base_url: &Url,
     segments: &[&str],
@@ -2125,7 +2150,16 @@ pub(crate) enum V1PageResource<'a> {
 
 #[derive(Clone, Copy)]
 pub(crate) enum PricingPageResource {
-    MessagingCountries,
+    V1Messaging,
+    V1PhoneNumbers,
+    V1Voice,
+    V2Voice,
+    V2Trunking,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum MessagingV2PageResource {
+    ChannelSenders,
 }
 
 impl V1PageResource<'_> {
@@ -2146,7 +2180,19 @@ impl V1PageResource<'_> {
 impl PricingPageResource {
     pub(crate) fn response_key(self) -> &'static str {
         match self {
-            Self::MessagingCountries => "countries",
+            Self::V1Messaging
+            | Self::V1PhoneNumbers
+            | Self::V1Voice
+            | Self::V2Voice
+            | Self::V2Trunking => "countries",
+        }
+    }
+}
+
+impl MessagingV2PageResource {
+    pub(crate) fn response_key(self) -> &'static str {
+        match self {
+            Self::ChannelSenders => "senders",
         }
     }
 }
@@ -2182,6 +2228,17 @@ pub(crate) fn pricing_page_url_from_base(
     let url = page_url_from_base(base_url, next_page_url)?;
     validate_page_origin(base_url, &url, "next_page_url")?;
     validate_pricing_page_url(base_url, &url, resource)?;
+    Ok(url)
+}
+
+pub(crate) fn messaging_v2_page_url_from_base(
+    base_url: &Url,
+    next_page_url: &str,
+    resource: MessagingV2PageResource,
+) -> Result<Url, TwilioError> {
+    let url = page_url_from_base(base_url, next_page_url)?;
+    validate_page_origin(base_url, &url, "next_page_url")?;
+    validate_messaging_v2_page_url(base_url, &url, resource)?;
     Ok(url)
 }
 
@@ -2337,27 +2394,29 @@ fn validate_v1_page_url(
 ) -> Result<(), TwilioError> {
     let segments = api_segments(base_url, page_url)?;
     let expected: Vec<&str> = match resource {
-        V1PageResource::Services => vec!["Services"],
-        V1PageResource::TollfreeVerifications => vec!["Tollfree", "Verifications"],
-        V1PageResource::A2PBrandRegistrations => vec!["a2p", "BrandRegistrations"],
+        V1PageResource::Services => vec!["v1", "Services"],
+        V1PageResource::TollfreeVerifications => vec!["v1", "Tollfree", "Verifications"],
+        V1PageResource::A2PBrandRegistrations => vec!["v1", "a2p", "BrandRegistrations"],
         V1PageResource::A2PBrandVettings { brand_sid } => {
-            vec!["a2p", "BrandRegistrations", brand_sid, "Vettings"]
+            vec!["v1", "a2p", "BrandRegistrations", brand_sid, "Vettings"]
         }
         V1PageResource::Usa2p { service_sid } => {
-            vec!["Services", service_sid, "Compliance", "Usa2p"]
+            vec!["v1", "Services", service_sid, "Compliance", "Usa2p"]
         }
         V1PageResource::PhoneNumbers { service_sid } => {
-            vec!["Services", service_sid, "PhoneNumbers"]
+            vec!["v1", "Services", service_sid, "PhoneNumbers"]
         }
-        V1PageResource::ShortCodes { service_sid } => vec!["Services", service_sid, "ShortCodes"],
+        V1PageResource::ShortCodes { service_sid } => {
+            vec!["v1", "Services", service_sid, "ShortCodes"]
+        }
         V1PageResource::AlphaSenders { service_sid } => {
-            vec!["Services", service_sid, "AlphaSenders"]
+            vec!["v1", "Services", service_sid, "AlphaSenders"]
         }
         V1PageResource::ChannelSenders { service_sid } => {
-            vec!["Services", service_sid, "ChannelSenders"]
+            vec!["v1", "Services", service_sid, "ChannelSenders"]
         }
         V1PageResource::DestinationAlphaSenders { service_sid } => {
-            vec!["Services", service_sid, "DestinationAlphaSenders"]
+            vec!["v1", "Services", service_sid, "DestinationAlphaSenders"]
         }
     };
     if segments.iter().map(String::as_str).collect::<Vec<_>>() != expected {
@@ -2380,7 +2439,11 @@ fn validate_pricing_page_url(
 ) -> Result<(), TwilioError> {
     let segments = api_segments(base_url, page_url)?;
     let expected: Vec<&str> = match resource {
-        PricingPageResource::MessagingCountries => vec!["Messaging", "Countries"],
+        PricingPageResource::V1Messaging => vec!["v1", "Messaging", "Countries"],
+        PricingPageResource::V1PhoneNumbers => vec!["v1", "PhoneNumbers", "Countries"],
+        PricingPageResource::V1Voice => vec!["v1", "Voice", "Countries"],
+        PricingPageResource::V2Voice => vec!["v2", "Voice", "Countries"],
+        PricingPageResource::V2Trunking => vec!["v2", "Trunking", "Countries"],
     };
     if segments.iter().map(String::as_str).collect::<Vec<_>>() != expected {
         return Err(TwilioError::InvalidResponseMetadata(
@@ -2388,6 +2451,28 @@ fn validate_pricing_page_url(
         ));
     }
     validate_page_query_keys(page_url, allowed_pricing_page_query_key, |_key| false)?;
+    Ok(())
+}
+
+fn validate_messaging_v2_page_url(
+    base_url: &Url,
+    page_url: &Url,
+    resource: MessagingV2PageResource,
+) -> Result<(), TwilioError> {
+    let segments = api_segments(base_url, page_url)?;
+    let expected: Vec<&str> = match resource {
+        MessagingV2PageResource::ChannelSenders => vec!["v2", "Channels", "Senders"],
+    };
+    if segments.iter().map(String::as_str).collect::<Vec<_>>() != expected {
+        return Err(TwilioError::InvalidResponseMetadata(
+            "next_page_url is not a page for this resource".to_owned(),
+        ));
+    }
+    validate_page_query_keys(
+        page_url,
+        |key| allowed_messaging_v2_page_query_key(key, resource),
+        |_key| false,
+    )?;
     Ok(())
 }
 
@@ -2403,16 +2488,16 @@ where
     let mut seen = Vec::new();
     for (key, _) in page_url.query_pairs() {
         if !allowed(key.as_ref()) {
-            return Err(TwilioError::InvalidResponseMetadata(format!(
-                "page URL has unsupported query parameter {key:?}"
-            )));
+            return Err(TwilioError::InvalidResponseMetadata(
+                "page URL has an unsupported query parameter".to_owned(),
+            ));
         }
         if !duplicate_allowed(key.as_ref())
             && seen.iter().any(|candidate| candidate == key.as_ref())
         {
-            return Err(TwilioError::InvalidResponseMetadata(format!(
-                "page URL repeated query parameter {key:?}"
-            )));
+            return Err(TwilioError::InvalidResponseMetadata(
+                "page URL repeated a query parameter".to_owned(),
+            ));
         }
         seen.push(key.into_owned());
     }
@@ -2468,6 +2553,11 @@ fn allowed_pricing_page_query_key(key: &str) -> bool {
     matches!(key, "PageSize" | "Page" | "PageToken")
 }
 
+fn allowed_messaging_v2_page_query_key(key: &str, resource: MessagingV2PageResource) -> bool {
+    matches!(key, "PageSize" | "Page" | "PageToken")
+        || matches!(resource, MessagingV2PageResource::ChannelSenders) && key == "Channel"
+}
+
 pub(crate) fn validate_legacy_next_page_continuation(
     current_url: &Url,
     next_url: &Url,
@@ -2479,7 +2569,7 @@ pub(crate) fn validate_legacy_next_page_continuation(
         ));
     }
     for key in legacy_stable_page_query_keys(resource) {
-        if query_values(current_url, key) != query_values(next_url, key) {
+        if !stable_page_query_matches(current_url, next_url, key) {
             return Err(TwilioError::InvalidResponseMetadata(format!(
                 "next_page_uri changed {key} query parameter"
             )));
@@ -2499,7 +2589,7 @@ pub(crate) fn validate_v1_next_page_continuation(
         ));
     }
     for key in v1_stable_page_query_keys(resource) {
-        if query_values(current_url, key) != query_values(next_url, key) {
+        if !stable_page_query_matches(current_url, next_url, key) {
             return Err(TwilioError::InvalidResponseMetadata(format!(
                 "next_page_url changed {key} query parameter"
             )));
@@ -2519,7 +2609,27 @@ pub(crate) fn validate_pricing_next_page_continuation(
         ));
     }
     for key in pricing_stable_page_query_keys(resource) {
-        if query_values(current_url, key) != query_values(next_url, key) {
+        if !stable_page_query_matches(current_url, next_url, key) {
+            return Err(TwilioError::InvalidResponseMetadata(format!(
+                "next_page_url changed {key} query parameter"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_messaging_v2_next_page_continuation(
+    current_url: &Url,
+    next_url: &Url,
+    resource: MessagingV2PageResource,
+) -> Result<(), TwilioError> {
+    if current_url.path() != next_url.path() {
+        return Err(TwilioError::InvalidResponseMetadata(
+            "next_page_url changed resource path".to_owned(),
+        ));
+    }
+    for key in messaging_v2_stable_page_query_keys(resource) {
+        if !stable_page_query_matches(current_url, next_url, key) {
             return Err(TwilioError::InvalidResponseMetadata(format!(
                 "next_page_url changed {key} query parameter"
             )));
@@ -2562,7 +2672,19 @@ fn v1_stable_page_query_keys(resource: V1PageResource<'_>) -> &'static [&'static
 
 fn pricing_stable_page_query_keys(resource: PricingPageResource) -> &'static [&'static str] {
     match resource {
-        PricingPageResource::MessagingCountries => &["PageSize"],
+        PricingPageResource::V1Messaging
+        | PricingPageResource::V1PhoneNumbers
+        | PricingPageResource::V1Voice
+        | PricingPageResource::V2Voice
+        | PricingPageResource::V2Trunking => &["PageSize"],
+    }
+}
+
+fn messaging_v2_stable_page_query_keys(
+    resource: MessagingV2PageResource,
+) -> &'static [&'static str] {
+    match resource {
+        MessagingV2PageResource::ChannelSenders => &["Channel", "PageSize"],
     }
 }
 
@@ -2576,6 +2698,22 @@ fn query_values(url: &Url, key: &str) -> Vec<String> {
             }
         })
         .collect()
+}
+
+fn stable_page_query_matches(current_url: &Url, next_url: &Url, key: &str) -> bool {
+    let current = query_values(current_url, key);
+    let next = query_values(next_url, key);
+    if current == next {
+        return true;
+    }
+    key == "PageSize" && current.is_empty() && valid_page_size_query(&next)
+}
+
+fn valid_page_size_query(values: &[String]) -> bool {
+    values.len() == 1
+        && values[0]
+            .parse::<u32>()
+            .is_ok_and(|value| (1..=1000).contains(&value))
 }
 
 /// Messaging v1 pagination metadata.
@@ -2645,10 +2783,9 @@ pub(crate) fn validate_v1_meta_key(
 ) -> Result<(), TwilioError> {
     if let Some(key) = meta.key.as_deref() {
         if key != resource.response_key() {
-            return Err(TwilioError::InvalidResponseMetadata(format!(
-                "page meta key {key:?} does not match expected key {:?}",
-                resource.response_key()
-            )));
+            return Err(TwilioError::InvalidResponseMetadata(
+                "page meta key does not match the expected resource".to_owned(),
+            ));
         }
     }
     Ok(())
@@ -2660,10 +2797,23 @@ pub(crate) fn validate_pricing_meta_key(
 ) -> Result<(), TwilioError> {
     if let Some(key) = meta.key.as_deref() {
         if key != resource.response_key() {
-            return Err(TwilioError::InvalidResponseMetadata(format!(
-                "page meta key {key:?} does not match expected key {:?}",
-                resource.response_key()
-            )));
+            return Err(TwilioError::InvalidResponseMetadata(
+                "page meta key does not match the expected resource".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_messaging_v2_meta_key(
+    meta: &V1PageMeta,
+    resource: MessagingV2PageResource,
+) -> Result<(), TwilioError> {
+    if let Some(key) = meta.key.as_deref() {
+        if key != resource.response_key() {
+            return Err(TwilioError::InvalidResponseMetadata(
+                "page meta key does not match the expected resource".to_owned(),
+            ));
         }
     }
     Ok(())
@@ -3048,10 +3198,11 @@ mod tests {
     use crate::diagnostics::SensitiveDiagnostics;
 
     use super::{
-        LegacyPageResource, RequestOptions, RetryPolicy, TwilioAuth, TwilioClientConfig,
-        TwilioConfig, TwilioError, V1PageResource, endpoint_url_from_base,
-        legacy_page_uri_url_from_base, normalize_base_url, sanitize_diagnostic,
-        v1_page_url_from_base, validate_legacy_next_page_continuation,
+        LegacyPageResource, MessagingV2PageResource, PricingPageResource, RequestOptions,
+        RetryPolicy, TwilioAuth, TwilioClientConfig, TwilioConfig, TwilioError, V1PageResource,
+        endpoint_url_from_base, legacy_page_uri_url_from_base, normalize_base_url,
+        sanitize_diagnostic, v1_page_url_from_base, validate_legacy_next_page_continuation,
+        validate_messaging_v2_next_page_continuation, validate_pricing_next_page_continuation,
         validate_v1_next_page_continuation,
     };
     use std::time::Duration;
@@ -3085,19 +3236,19 @@ mod tests {
     fn env_value_helpers_build_base_and_client_config() {
         let base = TwilioConfig::from_env_values(
             Some("https://proxy.example.test/rest".to_owned()),
-            Some("https://proxy.example.test/messaging/v1".to_owned()),
-            Some("https://proxy.example.test/pricing/v1".to_owned()),
+            Some("https://proxy.example.test/messaging".to_owned()),
+            Some("https://proxy.example.test/pricing".to_owned()),
             Some("https://proxy.example.test/accounts/v1".to_owned()),
         )
         .expect("valid env base URLs should parse");
         assert_eq!(base.rest_base_url_ref(), "https://proxy.example.test/rest");
         assert_eq!(
             base.messaging_base_url_ref(),
-            "https://proxy.example.test/messaging/v1"
+            "https://proxy.example.test/messaging"
         );
         assert_eq!(
             base.pricing_base_url_ref(),
-            "https://proxy.example.test/pricing/v1"
+            "https://proxy.example.test/pricing"
         );
         assert_eq!(
             base.accounts_base_url_ref(),
@@ -3106,8 +3257,8 @@ mod tests {
 
         let config = TwilioClientConfig::from_env_values(
             Some("https://proxy.example.test/rest".to_owned()),
-            Some("https://proxy.example.test/messaging/v1".to_owned()),
-            Some("https://proxy.example.test/pricing/v1".to_owned()),
+            Some("https://proxy.example.test/messaging".to_owned()),
+            Some("https://proxy.example.test/pricing".to_owned()),
             Some("https://proxy.example.test/accounts/v1".to_owned()),
             Some("9".to_owned()),
             Some("test-agent/2.0".to_owned()),
@@ -3306,39 +3457,39 @@ mod tests {
 
     #[test]
     fn v1_page_url_validation_covers_services_and_subresources() {
-        let base_url = normalize_base_url("https://messaging.twilio.com/v1/proxy")
+        let base_url = normalize_base_url("https://messaging.twilio.com/proxy")
             .expect("proxy Messaging base URL should normalize");
         assert_eq!(
             v1_page_url_from_base(
                 &base_url,
-                "https://messaging.twilio.com/v1/proxy/Services/MG123/DestinationAlphaSenders?IsoCountryCode=FR&Page=1",
+                "https://messaging.twilio.com/proxy/v1/Services/MG123/DestinationAlphaSenders?IsoCountryCode=FR&Page=1",
                 V1PageResource::DestinationAlphaSenders {
                     service_sid: "MG123"
                 },
             )
             .expect("valid destination alpha sender page URL should pass")
             .as_str(),
-            "https://messaging.twilio.com/v1/proxy/Services/MG123/DestinationAlphaSenders?IsoCountryCode=FR&Page=1"
+            "https://messaging.twilio.com/proxy/v1/Services/MG123/DestinationAlphaSenders?IsoCountryCode=FR&Page=1"
         );
         assert_eq!(
             v1_page_url_from_base(
                 &base_url,
-                "https://messaging.twilio.com/v1/proxy/Tollfree/Verifications?TrustProductSid=BU1&TrustProductSid=BU2&Page=1",
+                "https://messaging.twilio.com/proxy/v1/Tollfree/Verifications?TrustProductSid=BU1&TrustProductSid=BU2&Page=1",
                 V1PageResource::TollfreeVerifications,
             )
             .expect("valid Tollfree Verifications page URL should pass")
             .as_str(),
-            "https://messaging.twilio.com/v1/proxy/Tollfree/Verifications?TrustProductSid=BU1&TrustProductSid=BU2&Page=1"
+            "https://messaging.twilio.com/proxy/v1/Tollfree/Verifications?TrustProductSid=BU1&TrustProductSid=BU2&Page=1"
         );
 
         for bad in [
-            "https://example.test/v1/proxy/Services?Page=1",
-            "https://user:pass@messaging.twilio.com/v1/proxy/Services?Page=1",
-            "https://messaging.twilio.com/v1/proxy/Services?Unexpected=1",
-            "https://messaging.twilio.com/v1/proxy/Services?Page=1#frag",
-            "https://messaging.twilio.com/v1/proxy/Services?Page=1&Page=2",
-            "https://messaging.twilio.com/v1/proxy/Services/MG999/PhoneNumbers?Page=1",
-            "https://messaging.twilio.com/v1/proxy/Tollfree/Verifications?Page=1&Page=2",
+            "https://example.test/proxy/v1/Services?Page=1",
+            "https://user:pass@messaging.twilio.com/proxy/v1/Services?Page=1",
+            "https://messaging.twilio.com/proxy/v1/Services?Unexpected=1",
+            "https://messaging.twilio.com/proxy/v1/Services?Page=1#frag",
+            "https://messaging.twilio.com/proxy/v1/Services?Page=1&Page=2",
+            "https://messaging.twilio.com/proxy/v1/Services/MG999/PhoneNumbers?Page=1",
+            "https://messaging.twilio.com/proxy/v1/Tollfree/Verifications?Page=1&Page=2",
         ] {
             let resource = if bad.contains("PhoneNumbers") {
                 V1PageResource::PhoneNumbers {
@@ -3379,7 +3530,7 @@ mod tests {
                 .is_ok()
         );
 
-        let messaging_base = normalize_base_url("https://messaging.twilio.com/v1")
+        let messaging_base = normalize_base_url("https://messaging.twilio.com")
             .expect("Messaging base URL should normalize");
         let current = v1_page_url_from_base(
             &messaging_base,
@@ -3461,6 +3612,91 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn next_page_continuation_allows_a_server_default_page_size() {
+        let legacy_current = url::Url::parse(
+            "https://api.twilio.com/2010-04-01/Accounts/AC123/Messages.json?Page=0",
+        )
+        .expect("valid legacy URL");
+        let legacy_next = url::Url::parse(
+            "https://api.twilio.com/2010-04-01/Accounts/AC123/Messages.json?PageSize=50&Page=1&PageToken=next",
+        )
+        .expect("valid legacy URL");
+        assert!(
+            validate_legacy_next_page_continuation(
+                &legacy_current,
+                &legacy_next,
+                LegacyPageResource::Messages,
+            )
+            .is_ok()
+        );
+
+        let v1_current = url::Url::parse("https://messaging.twilio.com/v1/Services?Page=0")
+            .expect("valid v1 URL");
+        let v1_next = url::Url::parse(
+            "https://messaging.twilio.com/v1/Services?PageSize=50&Page=1&PageToken=next",
+        )
+        .expect("valid v1 URL");
+        assert!(
+            validate_v1_next_page_continuation(&v1_current, &v1_next, V1PageResource::Services)
+                .is_ok()
+        );
+
+        let pricing_current =
+            url::Url::parse("https://pricing.twilio.com/v1/Messaging/Countries?Page=0")
+                .expect("valid Pricing URL");
+        let pricing_next = url::Url::parse(
+            "https://pricing.twilio.com/v1/Messaging/Countries?PageSize=50&Page=1&PageToken=next",
+        )
+        .expect("valid Pricing URL");
+        assert!(
+            validate_pricing_next_page_continuation(
+                &pricing_current,
+                &pricing_next,
+                PricingPageResource::V1Messaging,
+            )
+            .is_ok()
+        );
+
+        let v2_current = url::Url::parse(
+            "https://messaging.twilio.com/v2/Channels/Senders?Channel=whatsapp&Page=0",
+        )
+        .expect("valid Messaging v2 URL");
+        let v2_next = url::Url::parse(
+            "https://messaging.twilio.com/v2/Channels/Senders?Channel=whatsapp&PageSize=50&Page=1&PageToken=next",
+        )
+        .expect("valid Messaging v2 URL");
+        assert!(
+            validate_messaging_v2_next_page_continuation(
+                &v2_current,
+                &v2_next,
+                MessagingV2PageResource::ChannelSenders,
+            )
+            .is_ok()
+        );
+
+        let changed =
+            url::Url::parse("https://messaging.twilio.com/v1/Services?PageSize=20&Page=0")
+                .expect("valid v1 URL");
+        assert!(
+            validate_v1_next_page_continuation(&changed, &v1_next, V1PageResource::Services)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn page_validation_does_not_echo_untrusted_metadata() {
+        let base_url =
+            normalize_base_url("https://messaging.twilio.com").expect("valid Messaging base URL");
+        let error = v1_page_url_from_base(
+            &base_url,
+            "https://messaging.twilio.com/v1/Services?untrusted=%2B15551234567",
+            V1PageResource::Services,
+        )
+        .expect_err("unsupported query key should be rejected");
+        assert!(!format!("{error:?}").contains("+15551234567"));
     }
 
     #[test]

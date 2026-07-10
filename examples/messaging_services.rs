@@ -33,7 +33,7 @@ async fn main() -> ExampleResult<()> {
     .await?;
     let client = client_for(&server)?;
     let account = client.account(creds());
-    let service = account.service("MGalerts");
+    let service = account.messaging().v1().service("MGalerts");
 
     run_service_flow(account).await?;
     run_phone_number_flow(service).await?;
@@ -46,6 +46,8 @@ async fn main() -> ExampleResult<()> {
 
 async fn run_service_flow(account: TwilioAccount<'_>) -> ExampleResult<()> {
     let created = account
+        .messaging()
+        .v1()
         .services()
         .create(
             CreateServiceRequest::new("alerts")
@@ -55,6 +57,8 @@ async fn run_service_flow(account: TwilioAccount<'_>) -> ExampleResult<()> {
         )
         .await?;
     let services_page = account
+        .messaging()
+        .v1()
         .services()
         .list(ListServicesRequest::new().page_size(1).page(0))
         .await?;
@@ -64,10 +68,14 @@ async fn run_service_flow(account: TwilioAccount<'_>) -> ExampleResult<()> {
         .as_deref()
         .ok_or_else(|| missing("Services next_page_url"))?;
     let services_next = account
+        .messaging()
+        .v1()
         .services()
         .list_page_url(services_next_page_url)
         .await?;
     let updated = account
+        .messaging()
+        .v1()
         .service("MGalerts")
         .update(
             UpdateServiceRequest::new()

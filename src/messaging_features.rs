@@ -353,6 +353,160 @@ impl fmt::Debug for SafeListNumberRequest<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct ListMessagingGeoPermissionsRequest<'a> {
+    country_code: Option<&'a str>,
+}
+
+impl<'a> ListMessagingGeoPermissionsRequest<'a> {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { country_code: None }
+    }
+
+    #[must_use]
+    pub fn country_code(mut self, value: &'a str) -> Self {
+        self.country_code = Some(value);
+        self
+    }
+
+    fn validate(self) -> Result<(), TwilioError> {
+        if let Some(country_code) = self.country_code {
+            validate_country_codes("CountryCode", country_code)?;
+        }
+        Ok(())
+    }
+
+    fn apply_query(self, url: &mut url::Url) {
+        if let Some(country_code) = self.country_code {
+            url.query_pairs_mut()
+                .append_pair("CountryCode", country_code);
+        }
+    }
+
+    fn sensitive_values(self, auth: &'a TwilioAuth) -> Vec<&'a str> {
+        let mut values = auth.sensitive_values();
+        push_sensitive(&mut values, self.country_code);
+        values
+    }
+}
+
+impl Default for ListMessagingGeoPermissionsRequest<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for ListMessagingGeoPermissionsRequest<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ListMessagingGeoPermissionsRequest")
+            .field(
+                "country_code",
+                &self.country_code.map(|_| crate::common::REDACTED),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Serialize)]
+pub struct MessagingGeoPermissionUpdateItem<'a> {
+    country_code: &'a str,
+    #[serde(rename = "type")]
+    permission_type: &'static str,
+    enabled: bool,
+}
+
+impl<'a> MessagingGeoPermissionUpdateItem<'a> {
+    #[must_use]
+    pub fn country(country_code: &'a str, enabled: bool) -> Self {
+        Self {
+            country_code,
+            permission_type: "country",
+            enabled,
+        }
+    }
+
+    fn validate(self) -> Result<(), TwilioError> {
+        validate_iso_country("country_code", self.country_code)
+    }
+
+    fn push_sensitive_values(self, values: &mut Vec<&'a str>) {
+        values.push(self.country_code);
+    }
+}
+
+impl fmt::Debug for MessagingGeoPermissionUpdateItem<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MessagingGeoPermissionUpdateItem")
+            .field("country_code", &crate::common::REDACTED)
+            .field("permission_type", &self.permission_type)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct UpdateMessagingGeoPermissionsRequest<'a> {
+    permissions: Vec<MessagingGeoPermissionUpdateItem<'a>>,
+}
+
+impl<'a> UpdateMessagingGeoPermissionsRequest<'a> {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn permission(mut self, value: MessagingGeoPermissionUpdateItem<'a>) -> Self {
+        self.permissions.push(value);
+        self
+    }
+
+    #[must_use]
+    pub fn permissions(
+        mut self,
+        values: impl IntoIterator<Item = MessagingGeoPermissionUpdateItem<'a>>,
+    ) -> Self {
+        self.permissions.extend(values);
+        self
+    }
+
+    fn validate(&self) -> Result<(), TwilioError> {
+        if self.permissions.is_empty() {
+            return Err(TwilioError::InvalidRequest(
+                "Permissions must not be empty".to_owned(),
+            ));
+        }
+        for item in &self.permissions {
+            item.validate()?;
+        }
+        Ok(())
+    }
+
+    fn form_params(self) -> Result<Vec<FormParam>, TwilioError> {
+        json_items_form_with_key("Permissions", self.permissions.iter())
+    }
+
+    fn sensitive_values(&self, auth: &'a TwilioAuth) -> Vec<&'a str> {
+        let mut values = auth.sensitive_values();
+        for item in &self.permissions {
+            item.push_sensitive_values(&mut values);
+        }
+        values
+    }
+}
+
+impl fmt::Debug for UpdateMessagingGeoPermissionsRequest<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UpdateMessagingGeoPermissionsRequest")
+            .field(
+                "permissions",
+                &format_args!("[{} redacted]", self.permissions.len()),
+            )
+            .finish()
+    }
+}
+
 #[derive(Clone, Deserialize)]
 pub struct TwilioBulkContactResult {
     pub contact_id: Option<String>,
@@ -456,6 +610,53 @@ impl fmt::Debug for TwilioSafeListNumber {
         f.debug_struct("TwilioSafeListNumber")
             .field("sid", &redacted_option(&self.sid))
             .field("phone_number", &redacted_option(&self.phone_number))
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize)]
+pub struct TwilioMessagingGeoPermission {
+    pub country_code: Option<String>,
+    #[serde(rename = "type")]
+    pub permission_type: Option<String>,
+    pub enabled: Option<bool>,
+    pub prefix: Option<String>,
+    pub message: Option<String>,
+    pub error_code: Option<i64>,
+    #[serde(default)]
+    pub error_messages: Vec<String>,
+}
+
+impl fmt::Debug for TwilioMessagingGeoPermission {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TwilioMessagingGeoPermission")
+            .field("country_code", &redacted_option(&self.country_code))
+            .field("permission_type", &self.permission_type)
+            .field("enabled", &self.enabled)
+            .field("prefix", &redacted_option(&self.prefix))
+            .field("message", &redacted_option(&self.message))
+            .field("error_code", &self.error_code)
+            .field(
+                "error_messages",
+                &format_args!("[{} redacted]", self.error_messages.len()),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize)]
+pub struct TwilioMessagingGeoPermissions {
+    #[serde(default)]
+    pub permissions: Vec<TwilioMessagingGeoPermission>,
+}
+
+impl fmt::Debug for TwilioMessagingGeoPermissions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TwilioMessagingGeoPermissions")
+            .field(
+                "permissions",
+                &format_args!("[{}; {}]", crate::common::REDACTED, self.permissions.len()),
+            )
             .finish()
     }
 }
@@ -643,6 +844,83 @@ impl<'a> GlobalSafeListResource<'a> {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "async")]
+pub struct MessagingGeoPermissionsResource<'a> {
+    account: TwilioAccount<'a>,
+}
+
+#[cfg(feature = "async")]
+impl<'a> MessagingGeoPermissionsResource<'a> {
+    pub(crate) fn new(account: TwilioAccount<'a>) -> Self {
+        Self { account }
+    }
+
+    /// `GET /Messaging/GeoPermissions`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures, API
+    /// errors, or malformed JSON responses.
+    pub async fn fetch(
+        self,
+        request: ListMessagingGeoPermissionsRequest<'a>,
+    ) -> Result<TwilioMessagingGeoPermissions, TwilioError> {
+        async move {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let mut url = self
+                .account
+                .client
+                .accounts_endpoint(&["Messaging", "GeoPermissions"])?;
+            request.apply_query(&mut url);
+            let spec = RequestSpec::from_url(
+                ApiFamily::Accounts,
+                Method::GET,
+                url,
+                "messaging_geo_permissions.fetch",
+            );
+            self.account.send_spec_json(spec, &sensitive_values).await
+        }
+        .instrument(request_span(
+            &self.account.client.config.accounts,
+            "messaging_geo_permissions.fetch",
+            "GET",
+        ))
+        .await
+    }
+
+    /// `PATCH /Messaging/GeoPermissions`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures, API
+    /// errors, JSON serialization failures, or malformed JSON responses.
+    pub async fn update(
+        self,
+        request: UpdateMessagingGeoPermissionsRequest<'a>,
+    ) -> Result<TwilioMessagingGeoPermissions, TwilioError> {
+        async move {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let spec = RequestSpec::new(
+                ApiFamily::Accounts,
+                Method::PATCH,
+                ["Messaging", "GeoPermissions"],
+            )
+            .operation("messaging_geo_permissions.update")
+            .form_params(request.form_params()?);
+            self.account.send_spec_json(spec, &sensitive_values).await
+        }
+        .instrument(request_span(
+            &self.account.client.config.accounts,
+            "messaging_geo_permissions.update",
+            "PATCH",
+        ))
+        .await
+    }
+}
+
+#[derive(Clone, Copy)]
 #[cfg(feature = "sync")]
 pub struct BlockingContactsResource<'a> {
     account: BlockingTwilioAccount<'a>,
@@ -822,15 +1100,97 @@ impl<'a> BlockingGlobalSafeListResource<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingMessagingGeoPermissionsResource<'a> {
+    account: BlockingTwilioAccount<'a>,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingMessagingGeoPermissionsResource<'a> {
+    pub(crate) fn new(account: BlockingTwilioAccount<'a>) -> Self {
+        Self { account }
+    }
+
+    /// `GET /Messaging/GeoPermissions`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures, API
+    /// errors, or malformed JSON responses.
+    pub fn fetch(
+        self,
+        request: ListMessagingGeoPermissionsRequest<'a>,
+    ) -> Result<TwilioMessagingGeoPermissions, TwilioError> {
+        request_span(
+            &self.account.client.config.accounts,
+            "messaging_geo_permissions.fetch",
+            "GET",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let mut url = self
+                .account
+                .client
+                .accounts_endpoint(&["Messaging", "GeoPermissions"])?;
+            request.apply_query(&mut url);
+            let spec = RequestSpec::from_url(
+                ApiFamily::Accounts,
+                Method::GET,
+                url,
+                "messaging_geo_permissions.fetch",
+            );
+            self.account.send_spec_json(spec, &sensitive_values)
+        })
+    }
+
+    /// `PATCH /Messaging/GeoPermissions`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures, API
+    /// errors, JSON serialization failures, or malformed JSON responses.
+    pub fn update(
+        self,
+        request: UpdateMessagingGeoPermissionsRequest<'a>,
+    ) -> Result<TwilioMessagingGeoPermissions, TwilioError> {
+        request_span(
+            &self.account.client.config.accounts,
+            "messaging_geo_permissions.update",
+            "PATCH",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let spec = RequestSpec::new(
+                ApiFamily::Accounts,
+                Method::PATCH,
+                ["Messaging", "GeoPermissions"],
+            )
+            .operation("messaging_geo_permissions.update")
+            .form_params(request.form_params()?);
+            self.account.send_spec_json(spec, &sensitive_values)
+        })
+    }
+}
+
 fn json_items_form<'a, T: Serialize + 'a>(
+    items: impl Iterator<Item = &'a T>,
+) -> Result<Vec<FormParam>, TwilioError> {
+    json_items_form_with_key("Items", items)
+}
+
+fn json_items_form_with_key<'a, T: Serialize + 'a>(
+    key: &'static str,
     items: impl Iterator<Item = &'a T>,
 ) -> Result<Vec<FormParam>, TwilioError> {
     let mut params = Vec::new();
     for item in items {
         let encoded = serde_json::to_string(item).map_err(|error| {
-            TwilioError::InvalidRequest(format!("Items could not be serialized: {error}"))
+            TwilioError::InvalidRequest(format!("{key} could not be serialized: {error}"))
         })?;
-        push_str(&mut params, "Items", Some(&encoded));
+        push_str(&mut params, key, Some(&encoded));
     }
     Ok(params)
 }
@@ -857,4 +1217,21 @@ fn validate_required(name: &str, value: &str) -> Result<(), TwilioError> {
     } else {
         Ok(())
     }
+}
+
+fn validate_country_codes(name: &str, value: &str) -> Result<(), TwilioError> {
+    validate_required(name, value)?;
+    for country in value.split(',') {
+        validate_iso_country(name, country.trim())?;
+    }
+    Ok(())
+}
+
+fn validate_iso_country(name: &str, value: &str) -> Result<(), TwilioError> {
+    if value.len() != 2 || !value.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        return Err(TwilioError::InvalidRequest(format!(
+            "{name} must be a two-letter ISO country code"
+        )));
+    }
+    Ok(())
 }

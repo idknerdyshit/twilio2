@@ -747,6 +747,66 @@ impl<'a> CreateDestinationAlphaSenderRequest<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct CreatePreregisteredUsa2pRequest<'a> {
+    campaign_id: &'a str,
+    messaging_service_sid: &'a str,
+    cnp_migration: Option<bool>,
+}
+
+impl<'a> CreatePreregisteredUsa2pRequest<'a> {
+    #[must_use]
+    pub fn new(campaign_id: &'a str, messaging_service_sid: &'a str) -> Self {
+        Self {
+            campaign_id,
+            messaging_service_sid,
+            cnp_migration: None,
+        }
+    }
+
+    #[must_use]
+    pub fn cnp_migration(mut self, value: bool) -> Self {
+        self.cnp_migration = Some(value);
+        self
+    }
+
+    fn validate(self) -> Result<(), TwilioError> {
+        validate_required("CampaignId", self.campaign_id)?;
+        validate_required("MessagingServiceSid", self.messaging_service_sid)
+    }
+
+    fn form_params(self) -> Vec<FormParam> {
+        let mut params = Vec::new();
+        push_str(&mut params, "CampaignId", Some(self.campaign_id));
+        push_str(
+            &mut params,
+            "MessagingServiceSid",
+            Some(self.messaging_service_sid),
+        );
+        push_bool(&mut params, "CnpMigration", self.cnp_migration);
+        params
+    }
+
+    fn sensitive_values(self, creds: &'a TwilioAuth) -> Vec<&'a str> {
+        vec![
+            creds.account_sid(),
+            creds.auth_secret(),
+            self.campaign_id,
+            self.messaging_service_sid,
+        ]
+    }
+}
+
+impl std::fmt::Debug for CreatePreregisteredUsa2pRequest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreatePreregisteredUsa2pRequest")
+            .field("campaign_id", &crate::common::REDACTED)
+            .field("messaging_service_sid", &crate::common::REDACTED)
+            .field("cnp_migration", &self.cnp_migration)
+            .finish()
+    }
+}
+
 fn validate_required(name: &str, value: &str) -> Result<(), TwilioError> {
     if value.trim().is_empty() {
         return Err(TwilioError::InvalidRequest(format!(
@@ -831,6 +891,42 @@ impl std::fmt::Debug for TwilioService {
 pub struct TwilioServicePage {
     pub services: Vec<TwilioService>,
     pub meta: V1PageMeta,
+}
+
+#[derive(Clone, Debug)]
+pub struct TwilioServiceUsecase {
+    pub usecase: Option<String>,
+    pub description: Option<String>,
+    pub purpose: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TwilioServiceUsecases {
+    pub usecases: Vec<TwilioServiceUsecase>,
+}
+
+#[derive(Clone)]
+pub struct TwilioPreregisteredUsa2p {
+    pub sid: Option<String>,
+    pub account_sid: Option<String>,
+    pub messaging_service_sid: Option<String>,
+    pub campaign_id: Option<String>,
+    pub date_created: Option<OffsetDateTime>,
+}
+
+impl std::fmt::Debug for TwilioPreregisteredUsa2p {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TwilioPreregisteredUsa2p")
+            .field("sid", &redacted_option(&self.sid))
+            .field("account_sid", &redacted_option(&self.account_sid))
+            .field(
+                "messaging_service_sid",
+                &redacted_option(&self.messaging_service_sid),
+            )
+            .field("campaign_id", &redacted_option(&self.campaign_id))
+            .field("date_created", &self.date_created)
+            .finish()
+    }
 }
 
 #[derive(Clone)]
@@ -1083,6 +1179,62 @@ impl WireServicePage {
                 .map(WireService::into_service)
                 .collect(),
             meta: self.meta.into_meta(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct WireServiceUsecase {
+    usecase: Option<String>,
+    description: Option<String>,
+    purpose: Option<String>,
+}
+
+impl WireServiceUsecase {
+    fn into_usecase(self) -> TwilioServiceUsecase {
+        TwilioServiceUsecase {
+            usecase: self.usecase,
+            description: self.description,
+            purpose: self.purpose,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct WireServiceUsecases {
+    #[serde(default)]
+    usecases: Vec<WireServiceUsecase>,
+}
+
+impl WireServiceUsecases {
+    fn into_usecases(self) -> TwilioServiceUsecases {
+        TwilioServiceUsecases {
+            usecases: self
+                .usecases
+                .into_iter()
+                .map(WireServiceUsecase::into_usecase)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct WirePreregisteredUsa2p {
+    sid: Option<String>,
+    account_sid: Option<String>,
+    messaging_service_sid: Option<String>,
+    campaign_id: Option<String>,
+    date_created: Option<String>,
+}
+
+impl WirePreregisteredUsa2p {
+    fn into_preregistered_usa2p(self) -> TwilioPreregisteredUsa2p {
+        TwilioPreregisteredUsa2p {
+            sid: self.sid,
+            account_sid: self.account_sid,
+            messaging_service_sid: self.messaging_service_sid,
+            campaign_id: self.campaign_id,
+            date_created: parse_iso8601(self.date_created),
         }
     }
 }
@@ -1361,7 +1513,7 @@ impl<'a> ServicesResource<'a> {
             request.validate()?;
             let sensitive_values = request.sensitive_values(self.account.creds);
             let form_params = request.form_params();
-            let spec = RequestSpec::new(ApiFamily::Messaging, Method::POST, ["Services"])
+            let spec = RequestSpec::new(ApiFamily::MessagingV1, Method::POST, ["Services"])
                 .operation("services.create")
                 .form_params(form_params);
             let service: WireService = self.account.send_spec_json(spec, &sensitive_values).await?;
@@ -1392,7 +1544,7 @@ impl<'a> ServicesResource<'a> {
             let mut url = self.account.client.messaging_endpoint(&["Services"])?;
             request.apply_query(&mut url);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "services.list",
@@ -1428,7 +1580,7 @@ impl<'a> ServicesResource<'a> {
             let resource = V1PageResource::Services;
             let url = self.account.client.v1_page_url(next_page_url, resource)?;
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "services.list_page_url",
@@ -1442,6 +1594,22 @@ impl<'a> ServicesResource<'a> {
             "GET",
         ))
         .await
+    }
+
+    /// Service-level Messaging usecase discovery.
+    #[must_use]
+    pub fn usecases(self) -> ServicesUsecasesResource<'a> {
+        ServicesUsecasesResource {
+            account: self.account,
+        }
+    }
+
+    /// Preregistered USA2P campaign association.
+    #[must_use]
+    pub fn preregistered_usa2p(self) -> PreregisteredUsa2pResource<'a> {
+        PreregisteredUsa2pResource {
+            account: self.account,
+        }
     }
 
     fn read_page(
@@ -1495,6 +1663,86 @@ impl<'a> ServicesResource<'a> {
 
 fn split_service_page(page: TwilioServicePage) -> (Vec<TwilioService>, Option<String>) {
     (page.services, page.meta.next_page_url)
+}
+
+#[derive(Clone, Copy)]
+#[cfg(feature = "async")]
+pub struct ServicesUsecasesResource<'a> {
+    account: TwilioAccount<'a>,
+}
+
+#[cfg(feature = "async")]
+impl ServicesUsecasesResource<'_> {
+    /// `GET /Services/Usecases`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures, non-2xx API responses,
+    /// or malformed JSON responses.
+    pub async fn fetch(self) -> Result<TwilioServiceUsecases, TwilioError> {
+        async move {
+            let sensitive_values = vec![
+                self.account.creds.account_sid(),
+                self.account.creds.auth_secret(),
+            ];
+            let spec = RequestSpec::new(
+                ApiFamily::MessagingV1,
+                Method::GET,
+                ["Services", "Usecases"],
+            )
+            .operation("services.usecases.fetch");
+            let parsed: WireServiceUsecases =
+                self.account.send_spec_json(spec, &sensitive_values).await?;
+            Ok(parsed.into_usecases())
+        }
+        .instrument(request_span(
+            &self.account.client.config.messaging,
+            "services.usecases.fetch",
+            "GET",
+        ))
+        .await
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg(feature = "async")]
+pub struct PreregisteredUsa2pResource<'a> {
+    account: TwilioAccount<'a>,
+}
+
+#[cfg(feature = "async")]
+impl<'a> PreregisteredUsa2pResource<'a> {
+    /// `POST /Services/PreregisteredUsa2p`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, or malformed JSON responses.
+    pub async fn create(
+        self,
+        request: CreatePreregisteredUsa2pRequest<'a>,
+    ) -> Result<TwilioPreregisteredUsa2p, TwilioError> {
+        async move {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let spec = RequestSpec::new(
+                ApiFamily::MessagingV1,
+                Method::POST,
+                ["Services", "PreregisteredUsa2p"],
+            )
+            .operation("services.preregistered_usa2p.create")
+            .form_params(request.form_params());
+            let parsed: WirePreregisteredUsa2p =
+                self.account.send_spec_json(spec, &sensitive_values).await?;
+            Ok(parsed.into_preregistered_usa2p())
+        }
+        .instrument(request_span(
+            &self.account.client.config.messaging,
+            "services.preregistered_usa2p.create",
+            "POST",
+        ))
+        .await
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1644,7 +1892,7 @@ impl<'a> ServiceResource<'a> {
         operation: &'static str,
     ) -> Result<RequestSpec, TwilioError> {
         Ok(RequestSpec::from_url(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             self.service_url()?,
             operation,
@@ -1799,7 +2047,7 @@ macro_rules! impl_sender_resource {
                     let mut url = self.service.subresource_collection_url($segment)?;
                     request.apply_query(&mut url);
                     let spec = RequestSpec::from_url(
-                        ApiFamily::Messaging,
+                        ApiFamily::MessagingV1,
                         Method::GET,
                         url.clone(),
                         concat!("service.", stringify!($items_field), ".list"),
@@ -1843,7 +2091,7 @@ macro_rules! impl_sender_resource {
                         .client
                         .v1_page_url(next_page_url, resource)?;
                     let spec = RequestSpec::from_url(
-                        ApiFamily::Messaging,
+                        ApiFamily::MessagingV1,
                         Method::GET,
                         url.clone(),
                         concat!("service.", stringify!($items_field), ".list_page_url"),
@@ -1922,7 +2170,7 @@ macro_rules! impl_sender_resource {
                 operation: &'static str,
             ) -> Result<RequestSpec, TwilioError> {
                 Ok(RequestSpec::from_url(
-                    ApiFamily::Messaging,
+                    ApiFamily::MessagingV1,
                     method,
                     self.service.subresource_collection_url($segment)?,
                     operation,
@@ -1936,7 +2184,7 @@ macro_rules! impl_sender_resource {
                 operation: &'static str,
             ) -> Result<RequestSpec, TwilioError> {
                 Ok(RequestSpec::from_url(
-                    ApiFamily::Messaging,
+                    ApiFamily::MessagingV1,
                     method,
                     self.service.subresource_instance_url($segment, sid)?,
                     operation,
@@ -2127,7 +2375,7 @@ impl<'a> ServiceDestinationAlphaSendersResource<'a> {
                 .subresource_collection_url("DestinationAlphaSenders")?;
             request.apply_query(&mut url);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "service.destination_alpha_senders.list",
@@ -2174,7 +2422,7 @@ impl<'a> ServiceDestinationAlphaSendersResource<'a> {
                 .client
                 .v1_page_url(next_page_url, resource)?;
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "service.destination_alpha_senders.list_page_url",
@@ -2252,7 +2500,7 @@ impl<'a> ServiceDestinationAlphaSendersResource<'a> {
         operation: &'static str,
     ) -> Result<RequestSpec, TwilioError> {
         Ok(RequestSpec::from_url(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             self.service
                 .subresource_collection_url("DestinationAlphaSenders")?,
@@ -2267,7 +2515,7 @@ impl<'a> ServiceDestinationAlphaSendersResource<'a> {
         operation: &'static str,
     ) -> Result<RequestSpec, TwilioError> {
         Ok(RequestSpec::from_url(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             self.service
                 .subresource_instance_url("DestinationAlphaSenders", sid)?,
@@ -2351,7 +2599,7 @@ impl<'a> BlockingServicesResource<'a> {
         .in_scope(|| {
             request.validate()?;
             let sensitive_values = request.sensitive_values(self.account.creds);
-            let spec = RequestSpec::new(ApiFamily::Messaging, Method::POST, ["Services"])
+            let spec = RequestSpec::new(ApiFamily::MessagingV1, Method::POST, ["Services"])
                 .operation("services.create")
                 .form_params(request.form_params());
             let service: WireService = self.account.send_spec_json(spec, &sensitive_values)?;
@@ -2378,7 +2626,7 @@ impl<'a> BlockingServicesResource<'a> {
             let mut url = self.account.client.messaging_endpoint(&["Services"])?;
             request.apply_query(&mut url);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "services.list",
@@ -2410,7 +2658,7 @@ impl<'a> BlockingServicesResource<'a> {
             let resource = V1PageResource::Services;
             let url = self.account.client.v1_page_url(next_page_url, resource)?;
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "services.list_page_url",
@@ -2418,6 +2666,22 @@ impl<'a> BlockingServicesResource<'a> {
             let raw = self.account.send_spec_raw(spec, &sensitive_values)?;
             self.read_page(&raw.output, &sensitive_values, Some(&url))
         })
+    }
+
+    /// Service-level Messaging usecase discovery.
+    #[must_use]
+    pub fn usecases(self) -> BlockingServicesUsecasesResource<'a> {
+        BlockingServicesUsecasesResource {
+            account: self.account,
+        }
+    }
+
+    /// Preregistered USA2P campaign association.
+    #[must_use]
+    pub fn preregistered_usa2p(self) -> BlockingPreregisteredUsa2pResource<'a> {
+        BlockingPreregisteredUsa2pResource {
+            account: self.account,
+        }
     }
 
     fn read_page(
@@ -2464,6 +2728,84 @@ impl<'a> BlockingServicesResource<'a> {
             },
             split_service_page,
         )
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingServicesUsecasesResource<'a> {
+    account: BlockingTwilioAccount<'a>,
+}
+
+#[cfg(feature = "sync")]
+impl BlockingServicesUsecasesResource<'_> {
+    /// `GET /Services/Usecases`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for transport failures, non-2xx API responses,
+    /// or malformed JSON responses.
+    pub fn fetch(self) -> Result<TwilioServiceUsecases, TwilioError> {
+        request_span(
+            &self.account.client.config.messaging,
+            "services.usecases.fetch",
+            "GET",
+        )
+        .in_scope(|| {
+            let sensitive_values = vec![
+                self.account.creds.account_sid(),
+                self.account.creds.auth_secret(),
+            ];
+            let spec = RequestSpec::new(
+                ApiFamily::MessagingV1,
+                Method::GET,
+                ["Services", "Usecases"],
+            )
+            .operation("services.usecases.fetch");
+            let parsed: WireServiceUsecases =
+                self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(parsed.into_usecases())
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingPreregisteredUsa2pResource<'a> {
+    account: BlockingTwilioAccount<'a>,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingPreregisteredUsa2pResource<'a> {
+    /// `POST /Services/PreregisteredUsa2p`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError`] for invalid requests, transport failures,
+    /// non-2xx API responses, or malformed JSON responses.
+    pub fn create(
+        self,
+        request: CreatePreregisteredUsa2pRequest<'a>,
+    ) -> Result<TwilioPreregisteredUsa2p, TwilioError> {
+        request_span(
+            &self.account.client.config.messaging,
+            "services.preregistered_usa2p.create",
+            "POST",
+        )
+        .in_scope(|| {
+            request.validate()?;
+            let sensitive_values = request.sensitive_values(self.account.creds);
+            let spec = RequestSpec::new(
+                ApiFamily::MessagingV1,
+                Method::POST,
+                ["Services", "PreregisteredUsa2p"],
+            )
+            .operation("services.preregistered_usa2p.create")
+            .form_params(request.form_params());
+            let parsed: WirePreregisteredUsa2p =
+                self.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(parsed.into_preregistered_usa2p())
+        })
     }
 }
 
@@ -2607,7 +2949,7 @@ impl<'a> BlockingServiceResource<'a> {
         operation: &'static str,
     ) -> Result<RequestSpec, TwilioError> {
         Ok(RequestSpec::from_url(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             self.service_url()?,
             operation,
@@ -2746,7 +3088,7 @@ macro_rules! impl_blocking_sender_resource {
                     let mut url = self.service.subresource_collection_url($segment)?;
                     request.apply_query(&mut url);
                     let spec = RequestSpec::from_url(
-                        ApiFamily::Messaging,
+                        ApiFamily::MessagingV1,
                         Method::GET,
                         url.clone(),
                         concat!("service.", stringify!($items_field), ".list"),
@@ -2788,7 +3130,7 @@ macro_rules! impl_blocking_sender_resource {
                         .client
                         .v1_page_url(next_page_url, resource)?;
                     let spec = RequestSpec::from_url(
-                        ApiFamily::Messaging,
+                        ApiFamily::MessagingV1,
                         Method::GET,
                         url.clone(),
                         concat!("service.", stringify!($items_field), ".list_page_url"),
@@ -2858,7 +3200,7 @@ macro_rules! impl_blocking_sender_resource {
                 operation: &'static str,
             ) -> Result<RequestSpec, TwilioError> {
                 Ok(RequestSpec::from_url(
-                    ApiFamily::Messaging,
+                    ApiFamily::MessagingV1,
                     method,
                     self.service.subresource_collection_url($segment)?,
                     operation,
@@ -2872,7 +3214,7 @@ macro_rules! impl_blocking_sender_resource {
                 operation: &'static str,
             ) -> Result<RequestSpec, TwilioError> {
                 Ok(RequestSpec::from_url(
-                    ApiFamily::Messaging,
+                    ApiFamily::MessagingV1,
                     method,
                     self.service.subresource_instance_url($segment, sid)?,
                     operation,
@@ -3061,7 +3403,7 @@ impl<'a> BlockingServiceDestinationAlphaSendersResource<'a> {
                 .subresource_collection_url("DestinationAlphaSenders")?;
             request.apply_query(&mut url);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "service.destination_alpha_senders.list",
@@ -3106,7 +3448,7 @@ impl<'a> BlockingServiceDestinationAlphaSendersResource<'a> {
                 .client
                 .v1_page_url(next_page_url, resource)?;
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "service.destination_alpha_senders.list_page_url",
@@ -3175,7 +3517,7 @@ impl<'a> BlockingServiceDestinationAlphaSendersResource<'a> {
         operation: &'static str,
     ) -> Result<RequestSpec, TwilioError> {
         Ok(RequestSpec::from_url(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             self.service
                 .subresource_collection_url("DestinationAlphaSenders")?,
@@ -3190,7 +3532,7 @@ impl<'a> BlockingServiceDestinationAlphaSendersResource<'a> {
         operation: &'static str,
     ) -> Result<RequestSpec, TwilioError> {
         Ok(RequestSpec::from_url(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             self.service
                 .subresource_instance_url("DestinationAlphaSenders", sid)?,

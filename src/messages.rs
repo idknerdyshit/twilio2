@@ -846,7 +846,7 @@ impl std::fmt::Debug for TwilioMessage {
             .field("to", &redacted_option(&self.to))
             .field("date_updated", &self.date_updated)
             .field("price", &self.price)
-            .field("error_message", &self.error_message)
+            .field("error_message", &redacted_option(&self.error_message))
             .field("uri", &redacted_option(&self.uri))
             .field("account_sid", &redacted_option(&self.account_sid))
             .field("num_media", &self.num_media)

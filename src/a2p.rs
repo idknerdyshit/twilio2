@@ -17,8 +17,8 @@ use crate::client::TwilioAccount;
 use crate::common::BlockingTwilioPaginator;
 use crate::common::{
     ApiFamily, DEFAULT_PAGE_SIZE, FormParam, RawResponse, RequestSpec, TwilioAuth, TwilioError,
-    V1PageMeta, V1PageResource, WireV1PageMeta, decode_json_response, push_bool, push_sensitive,
-    push_str, redacted_option, redacted_optional, request_span, validate_page_size,
+    V1PageMeta, V1PageResource, WireV1PageMeta, decode_json_response, non_empty, push_bool,
+    push_sensitive, push_str, redacted_option, redacted_optional, request_span, validate_page_size,
     validate_v1_meta_key, validate_v1_next_page_continuation,
 };
 #[cfg(feature = "async")]
@@ -881,6 +881,39 @@ pub struct TwilioUsa2pUsecases {
     pub us_app_to_person_usecases: Vec<TwilioUsa2pUsecase>,
 }
 
+#[derive(Clone)]
+pub struct TwilioA2PBrandRegistrationOtp {
+    pub account_sid: Option<String>,
+    pub brand_registration_sid: Option<String>,
+}
+
+impl fmt::Debug for TwilioA2PBrandRegistrationOtp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TwilioA2PBrandRegistrationOtp")
+            .field("account_sid", &redacted_option(&self.account_sid))
+            .field(
+                "brand_registration_sid",
+                &redacted_option(&self.brand_registration_sid),
+            )
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
+struct WireA2PBrandRegistrationOtp {
+    account_sid: Option<String>,
+    brand_registration_sid: Option<String>,
+}
+
+impl WireA2PBrandRegistrationOtp {
+    fn into_otp(self) -> TwilioA2PBrandRegistrationOtp {
+        TwilioA2PBrandRegistrationOtp {
+            account_sid: non_empty(self.account_sid),
+            brand_registration_sid: non_empty(self.brand_registration_sid),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct WireA2PBrandRegistrationPage {
     #[serde(default)]
@@ -954,7 +987,7 @@ impl<'a> A2PBrandRegistrationsResource<'a> {
             request.validate()?;
             let sensitive_values = request.sensitive_values(self.account.creds);
             let spec = RequestSpec::new(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::POST,
                 ["a2p", "BrandRegistrations"],
             )
@@ -985,7 +1018,7 @@ impl<'a> A2PBrandRegistrationsResource<'a> {
             request.apply_query(&mut url);
             let sensitive_values = request.sensitive_values(self.account.creds);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "a2p.brand_registrations.list",
@@ -1012,7 +1045,7 @@ impl<'a> A2PBrandRegistrationsResource<'a> {
             let url = self.account.client.v1_page_url(next_page_url, resource)?;
             let sensitive_values = self.account.creds.sensitive_values();
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "a2p.brand_registrations.list_page_url",
@@ -1096,6 +1129,11 @@ impl<'a> A2PBrandRegistrationResource<'a> {
         A2PBrandVettingsResource::new(self)
     }
 
+    #[must_use]
+    pub fn sms_otp(self) -> A2PBrandRegistrationSmsOtpResource<'a> {
+        A2PBrandRegistrationSmsOtpResource::new(self)
+    }
+
     /// # Errors
     /// Returns [`TwilioError`] for transport failures, API errors, or malformed JSON.
     pub async fn fetch(self) -> Result<TwilioA2PBrandRegistration, TwilioError> {
@@ -1130,7 +1168,7 @@ impl<'a> A2PBrandRegistrationResource<'a> {
 
     fn brand_spec(self, method: Method, operation: &'static str) -> RequestSpec {
         RequestSpec::new(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             ["a2p", "BrandRegistrations", self.sid],
         )
@@ -1141,6 +1179,47 @@ impl<'a> A2PBrandRegistrationResource<'a> {
         let mut values = self.account.creds.sensitive_values();
         values.push(self.sid);
         values
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg(feature = "async")]
+pub struct A2PBrandRegistrationSmsOtpResource<'a> {
+    brand: A2PBrandRegistrationResource<'a>,
+}
+
+#[cfg(feature = "async")]
+impl<'a> A2PBrandRegistrationSmsOtpResource<'a> {
+    fn new(brand: A2PBrandRegistrationResource<'a>) -> Self {
+        Self { brand }
+    }
+
+    /// Retry SMS OTP verification for a Sole Proprietor Brand Registration.
+    ///
+    /// # Errors
+    /// Returns [`TwilioError`] for transport failures, API errors, or malformed JSON.
+    pub async fn create(self) -> Result<TwilioA2PBrandRegistrationOtp, TwilioError> {
+        async move {
+            let sensitive_values = self.brand.sensitive_values();
+            let spec = RequestSpec::new(
+                ApiFamily::MessagingV1,
+                Method::POST,
+                ["a2p", "BrandRegistrations", self.brand.sid, "SmsOtp"],
+            )
+            .operation("a2p.brand_registration.sms_otp.create");
+            let parsed: WireA2PBrandRegistrationOtp = self
+                .brand
+                .account
+                .send_spec_json(spec, &sensitive_values)
+                .await?;
+            Ok(parsed.into_otp())
+        }
+        .instrument(request_span(
+            &self.brand.account.client.config.messaging,
+            "a2p.brand_registration.sms_otp.create",
+            "POST",
+        ))
+        .await
     }
 }
 
@@ -1200,7 +1279,7 @@ impl<'a> A2PBrandVettingsResource<'a> {
             let sensitive_values =
                 request.sensitive_values(self.brand.account.creds, self.brand.sid);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "a2p.brand_vettings.list",
@@ -1238,7 +1317,7 @@ impl<'a> A2PBrandVettingsResource<'a> {
             let mut sensitive_values = self.brand.account.creds.sensitive_values();
             sensitive_values.push(self.brand.sid);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "a2p.brand_vettings.list_page_url",
@@ -1280,7 +1359,7 @@ impl<'a> A2PBrandVettingsResource<'a> {
 
     fn collection_spec(self, method: Method, operation: &'static str) -> RequestSpec {
         RequestSpec::new(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             ["a2p", "BrandRegistrations", self.brand.sid, "Vettings"],
         )
@@ -1289,7 +1368,7 @@ impl<'a> A2PBrandVettingsResource<'a> {
 
     fn vetting_spec(self, method: Method, sid: &'a str, operation: &'static str) -> RequestSpec {
         RequestSpec::new(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             ["a2p", "BrandRegistrations", self.brand.sid, "Vettings", sid],
         )
@@ -1368,7 +1447,7 @@ impl<'a> ServiceUsa2pResource<'a> {
             let sensitive_values = request.sensitive_values(account.creds, service_sid);
             let spec = request.apply_headers(
                 RequestSpec::new(
-                    ApiFamily::Messaging,
+                    ApiFamily::MessagingV1,
                     Method::POST,
                     ["Services", service_sid, "Compliance", "Usa2p"],
                 )
@@ -1401,7 +1480,7 @@ impl<'a> ServiceUsa2pResource<'a> {
             request.apply_query(&mut url);
             let sensitive_values = request.sensitive_values(account.creds, service_sid);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "service.usa2p.list",
@@ -1428,7 +1507,7 @@ impl<'a> ServiceUsa2pResource<'a> {
             let mut sensitive_values = account.creds.sensitive_values();
             sensitive_values.push(service_sid);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "service.usa2p.list_page_url",
@@ -1484,7 +1563,7 @@ impl<'a> ServiceUsa2pResource<'a> {
 
     fn instance_spec(self, method: Method, sid: &'a str, operation: &'static str) -> RequestSpec {
         RequestSpec::new(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             ["Services", self.service.sid(), "Compliance", "Usa2p", sid],
         )
@@ -1572,7 +1651,7 @@ impl<'a> ServiceUsa2pUsecasesResource<'a> {
             request.apply_query(&mut url);
             let sensitive_values = request.sensitive_values(account.creds, service_sid);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url,
                 "service.usa2p_usecases.fetch",
@@ -1617,7 +1696,7 @@ impl<'a> BlockingA2PBrandRegistrationsResource<'a> {
             request.validate()?;
             let sensitive_values = request.sensitive_values(self.account.creds);
             let spec = RequestSpec::new(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::POST,
                 ["a2p", "BrandRegistrations"],
             )
@@ -1647,7 +1726,7 @@ impl<'a> BlockingA2PBrandRegistrationsResource<'a> {
             request.apply_query(&mut url);
             let sensitive_values = request.sensitive_values(self.account.creds);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "a2p.brand_registrations.list",
@@ -1673,7 +1752,7 @@ impl<'a> BlockingA2PBrandRegistrationsResource<'a> {
             let url = self.account.client.v1_page_url(next_page_url, resource)?;
             let sensitive_values = self.account.creds.sensitive_values();
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "a2p.brand_registrations.list_page_url",
@@ -1751,6 +1830,11 @@ impl<'a> BlockingA2PBrandRegistrationResource<'a> {
         BlockingA2PBrandVettingsResource::new(self)
     }
 
+    #[must_use]
+    pub fn sms_otp(self) -> BlockingA2PBrandRegistrationSmsOtpResource<'a> {
+        BlockingA2PBrandRegistrationSmsOtpResource::new(self)
+    }
+
     /// # Errors
     /// Returns [`TwilioError`] for transport failures, API errors, or malformed JSON.
     pub fn fetch(self) -> Result<TwilioA2PBrandRegistration, TwilioError> {
@@ -1783,7 +1867,7 @@ impl<'a> BlockingA2PBrandRegistrationResource<'a> {
 
     fn brand_spec(self, method: Method, operation: &'static str) -> RequestSpec {
         RequestSpec::new(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             ["a2p", "BrandRegistrations", self.sid],
         )
@@ -1794,6 +1878,43 @@ impl<'a> BlockingA2PBrandRegistrationResource<'a> {
         let mut values = self.account.creds.sensitive_values();
         values.push(self.sid);
         values
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg(feature = "sync")]
+pub struct BlockingA2PBrandRegistrationSmsOtpResource<'a> {
+    brand: BlockingA2PBrandRegistrationResource<'a>,
+}
+
+#[cfg(feature = "sync")]
+impl<'a> BlockingA2PBrandRegistrationSmsOtpResource<'a> {
+    fn new(brand: BlockingA2PBrandRegistrationResource<'a>) -> Self {
+        Self { brand }
+    }
+
+    /// Retry SMS OTP verification for a Sole Proprietor Brand Registration.
+    ///
+    /// # Errors
+    /// Returns [`TwilioError`] for transport failures, API errors, or malformed JSON.
+    pub fn create(self) -> Result<TwilioA2PBrandRegistrationOtp, TwilioError> {
+        request_span(
+            &self.brand.account.client.config.messaging,
+            "a2p.brand_registration.sms_otp.create",
+            "POST",
+        )
+        .in_scope(|| {
+            let sensitive_values = self.brand.sensitive_values();
+            let spec = RequestSpec::new(
+                ApiFamily::MessagingV1,
+                Method::POST,
+                ["a2p", "BrandRegistrations", self.brand.sid, "SmsOtp"],
+            )
+            .operation("a2p.brand_registration.sms_otp.create");
+            let parsed: WireA2PBrandRegistrationOtp =
+                self.brand.account.send_spec_json(spec, &sensitive_values)?;
+            Ok(parsed.into_otp())
+        })
     }
 }
 
@@ -1854,7 +1975,7 @@ impl<'a> BlockingA2PBrandVettingsResource<'a> {
             let sensitive_values =
                 request.sensitive_values(self.brand.account.creds, self.brand.sid);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "a2p.brand_vettings.list",
@@ -1887,7 +2008,7 @@ impl<'a> BlockingA2PBrandVettingsResource<'a> {
             let mut sensitive_values = self.brand.account.creds.sensitive_values();
             sensitive_values.push(self.brand.sid);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "a2p.brand_vettings.list_page_url",
@@ -1915,7 +2036,7 @@ impl<'a> BlockingA2PBrandVettingsResource<'a> {
 
     fn collection_spec(self, method: Method, operation: &'static str) -> RequestSpec {
         RequestSpec::new(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             ["a2p", "BrandRegistrations", self.brand.sid, "Vettings"],
         )
@@ -1924,7 +2045,7 @@ impl<'a> BlockingA2PBrandVettingsResource<'a> {
 
     fn vetting_spec(self, method: Method, sid: &'a str, operation: &'static str) -> RequestSpec {
         RequestSpec::new(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             ["a2p", "BrandRegistrations", self.brand.sid, "Vettings", sid],
         )
@@ -2008,7 +2129,7 @@ impl<'a> BlockingServiceUsa2pResource<'a> {
             let sensitive_values = request.sensitive_values(account.creds, service_sid);
             let spec = request.apply_headers(
                 RequestSpec::new(
-                    ApiFamily::Messaging,
+                    ApiFamily::MessagingV1,
                     Method::POST,
                     ["Services", service_sid, "Compliance", "Usa2p"],
                 )
@@ -2040,7 +2161,7 @@ impl<'a> BlockingServiceUsa2pResource<'a> {
             request.apply_query(&mut url);
             let sensitive_values = request.sensitive_values(account.creds, service_sid);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "service.usa2p.list",
@@ -2066,7 +2187,7 @@ impl<'a> BlockingServiceUsa2pResource<'a> {
             let mut sensitive_values = account.creds.sensitive_values();
             sensitive_values.push(service_sid);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "service.usa2p.list_page_url",
@@ -2114,7 +2235,7 @@ impl<'a> BlockingServiceUsa2pResource<'a> {
 
     fn instance_spec(self, method: Method, sid: &'a str, operation: &'static str) -> RequestSpec {
         RequestSpec::new(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             ["Services", self.service.sid(), "Compliance", "Usa2p", sid],
         )
@@ -2205,7 +2326,7 @@ impl<'a> BlockingServiceUsa2pUsecasesResource<'a> {
             request.apply_query(&mut url);
             let sensitive_values = request.sensitive_values(account.creds, service_sid);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url,
                 "service.usa2p_usecases.fetch",

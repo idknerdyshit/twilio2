@@ -20,15 +20,21 @@ It covers:
 - Compliance Toolkit message controls exposed on Programmable Messaging
   endpoints, including message intent
 - Pricing v1 Messaging Countries: list, pagination, and per-country SMS prices
+- Messaging v1 Link Shortening domains, certificates, DNS validation, and
+  messaging-service associations
+- Messaging v2 Channel Senders and WhatsApp typing indicators, plus Messaging
+  v3 Apple and RCS typing indicators
+- Accounts v1 Messaging GeoPermissions and Messaging Service use-case helpers
 
 The client stores only shared transport state and parsed base URLs. Account SID
 and Auth Token values, or Account SID plus API Key SID/Secret values, are passed
 through `TwilioAuth` to an account-scoped handle; credential values are redacted
 from `Debug` output. Separate Twilio products such as Content, Conversations,
-Verify, WhatsApp Business Platform, and RCS product APIs are not folded into
-this crate unless a parameter or endpoint is exposed through Programmable
-Messaging. Inbound webhook parsing, signature verification, and higher-level
-provider traits remain intentionally outside this crate.
+Verify, and the standalone WhatsApp Business Platform are not folded into this
+crate. RCS and WhatsApp operations are included only where Twilio exposes them
+through Programmable Messaging endpoints. Inbound webhook parsing, signature
+verification, and higher-level provider traits remain intentionally outside this
+crate.
 
 Custom base URLs must use HTTPS. If a custom proxy is used for Messaging v1
 pagination, it must rewrite Twilio's absolute `next_page_url` values to the
@@ -41,14 +47,14 @@ Pricing v1 pagination follows the same rule for `pricing_base_url`.
 
 ```toml
 [dependencies]
-twilio2 = "0.3"
+twilio2 = "0.4"
 ```
 
 For a blocking API, disable defaults and choose `sync` plus a TLS backend:
 
 ```toml
 [dependencies]
-twilio2 = { version = "0.3", default-features = false, features = ["sync", "rustls"] }
+twilio2 = { version = "0.4", default-features = false, features = ["sync", "rustls"] }
 ```
 
 For an async API with a different TLS backend, disable default features and
@@ -56,7 +62,7 @@ choose `async` plus that backend:
 
 ```toml
 [dependencies]
-twilio2 = { version = "0.3", default-features = false, features = ["async", "native-tls"] }
+twilio2 = { version = "0.4", default-features = false, features = ["async", "native-tls"] }
 ```
 
 The `rustls-no-provider` feature is also available for applications that install
@@ -68,9 +74,8 @@ least one of `async`/`sync` and at least one TLS backend.
 
 ## API Shape
 
-Version `0.3` uses account/resource builders throughout. Construct a client with
-`TwilioClient::from_config`, `TwilioClient::from_http_client`, or
-`TwilioClient::try_with_config`, then call resource methods such as
+Version `0.4` uses account/resource builders throughout. Construct a client with
+`TwilioClient::from_config`, then call resource methods such as
 `client.account(&creds).messages().create(...)`. `TwilioClient` never stores
 credentials. `TwilioAuth` owns redacted credential buffers that are zeroized
 when dropped; caller-owned source strings and transport-created header copies
@@ -141,7 +146,7 @@ use twilio2::{CreateServiceRequest, HttpMethod, TwilioClient, TwilioAuth};
 # let creds = TwilioAuth::auth_token("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 let service = client
     .account(&creds)
-    .services()
+    .messaging().v1().services()
     .create(
         CreateServiceRequest::new("alerts")
             .inbound_request_url("https://example.com/inbound")
@@ -163,8 +168,7 @@ use twilio2::{ListPricingMessagingCountriesRequest, TwilioClient, TwilioAuth};
 # let creds = TwilioAuth::auth_token("ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "secret");
 let countries = client
     .account(&creds)
-    .pricing()
-    .messaging()
+    .pricing().v1().messaging()
     .countries()
     .list_all_with(ListPricingMessagingCountriesRequest::new().page_size(50))
     .collect_all()
@@ -172,8 +176,7 @@ let countries = client
 
 let us_prices = client
     .account(&creds)
-    .pricing()
-    .messaging()
+    .pricing().v1().messaging()
     .countries()
     .fetch("US")
     .await?;
@@ -196,18 +199,18 @@ use twilio2::{TwilioClient, TwilioClientConfig};
 # fn example() -> Result<(), Box<dyn std::error::Error>> {
 let config = TwilioClientConfig::new()
     .rest_base_url("https://proxy.example.com/twilio-rest")
-    .messaging_base_url("https://proxy.example.com/twilio-messaging/v1")
-    .pricing_base_url("https://proxy.example.com/twilio-pricing/v1")
+    .messaging_base_url("https://proxy.example.com/twilio-messaging")
+    .pricing_base_url("https://proxy.example.com/twilio-pricing")
     .accounts_base_url("https://proxy.example.com/twilio-accounts/v1");
-let client = TwilioClient::from_config_and_http_client(config, reqwest::Client::new())?;
+let client = TwilioClient::from_config(config)?;
 # let _ = client;
 # Ok(())
 # }
 ```
 
-`TwilioClient::new(reqwest::Client)` and
-`TwilioClient::try_with_config(reqwest::Client, TwilioConfig)` remain available
-as compatibility constructors.
+For custom CA roots, proxies, or connection settings, use
+`TwilioClient::from_config_with_http_builder`. The crate always applies
+HTTPS-only and no-redirect policies after customization.
 
 For blocking callers, use `BlockingTwilioClient::from_config_and_agent`,
 `BlockingTwilioClient::from_agent`, or

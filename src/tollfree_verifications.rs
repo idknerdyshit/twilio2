@@ -1402,7 +1402,7 @@ impl<'a> TollfreeVerificationsResource<'a> {
             request.validate()?;
             let sensitive_values = request.sensitive_values(self.account.creds);
             let spec = RequestSpec::new(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::POST,
                 ["Tollfree", "Verifications"],
             )
@@ -1437,7 +1437,7 @@ impl<'a> TollfreeVerificationsResource<'a> {
             let mut url = self.collection_url()?;
             request.apply_query(&mut url);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "tollfree_verifications.list",
@@ -1473,7 +1473,7 @@ impl<'a> TollfreeVerificationsResource<'a> {
             let resource = V1PageResource::TollfreeVerifications;
             let url = self.account.client.v1_page_url(next_page_url, resource)?;
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "tollfree_verifications.list_page_url",
@@ -1648,7 +1648,7 @@ impl<'a> TollfreeVerificationResource<'a> {
         operation: &'static str,
     ) -> Result<RequestSpec, TwilioError> {
         Ok(RequestSpec::from_url(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             self.verification_url()?,
             operation,
@@ -1696,7 +1696,7 @@ impl<'a> BlockingTollfreeVerificationsResource<'a> {
             request.validate()?;
             let sensitive_values = request.sensitive_values(self.account.creds);
             let spec = RequestSpec::new(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::POST,
                 ["Tollfree", "Verifications"],
             )
@@ -1730,7 +1730,7 @@ impl<'a> BlockingTollfreeVerificationsResource<'a> {
             let mut url = self.collection_url()?;
             request.apply_query(&mut url);
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "tollfree_verifications.list",
@@ -1765,7 +1765,7 @@ impl<'a> BlockingTollfreeVerificationsResource<'a> {
             let resource = V1PageResource::TollfreeVerifications;
             let url = self.account.client.v1_page_url(next_page_url, resource)?;
             let spec = RequestSpec::from_url(
-                ApiFamily::Messaging,
+                ApiFamily::MessagingV1,
                 Method::GET,
                 url.clone(),
                 "tollfree_verifications.list_page_url",
@@ -1925,7 +1925,7 @@ impl<'a> BlockingTollfreeVerificationResource<'a> {
         operation: &'static str,
     ) -> Result<RequestSpec, TwilioError> {
         Ok(RequestSpec::from_url(
-            ApiFamily::Messaging,
+            ApiFamily::MessagingV1,
             method,
             self.verification_url()?,
             operation,

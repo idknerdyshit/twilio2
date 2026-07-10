@@ -11,19 +11,24 @@ use rust_decimal::Decimal;
 use support::twilio_config;
 use support::{HttpsMockServer, MockResponse, blocking_client_for, test_agent, test_creds};
 use twilio2::{
-    A2PBrandType, A2PUsecase, A2PVettingProvider, ApiFamily, BlockingTwilioClient,
-    BulkConsentsRequest, BulkContactsRequest, ConsentItem, ConsentSource, ConsentStatus,
-    ContactItem, CreateA2PBrandRegistrationRequest, CreateA2PBrandVettingRequest,
-    CreateMessageRequest, CreateTollfreeVerificationRequest, CreateUsa2pRequest,
-    FetchDeactivationsRequest, FetchUsa2pUsecasesRequest, ListA2PBrandRegistrationsRequest,
-    ListA2PBrandVettingsRequest, ListMessagesRequest, ListPricingMessagingCountriesRequest,
-    ListTollfreeVerificationsRequest, ListUsa2pRequest, Operation, RawResponse, RequestOptions,
+    A2PBrandType, A2PUsecase, A2PVettingProvider, ApiFamily, AppleTypingEvent,
+    BlockingTwilioClient, BulkConsentsRequest, BulkContactsRequest, ChannelSenderConfiguration,
+    ChannelSenderHttpMethod, ChannelSenderProfile, ChannelSenderWebhook, ConsentItem,
+    ConsentSource, ConsentStatus, ContactItem, CreateA2PBrandRegistrationRequest,
+    CreateA2PBrandVettingRequest, CreateMessageRequest, CreateMessagingV2ChannelSenderRequest,
+    CreateMessagingV2TypingIndicatorRequest, CreateMessagingV3TypingIndicatorRequest,
+    CreateTollfreeVerificationRequest, CreateUsa2pRequest, FetchDeactivationsRequest,
+    FetchUsa2pUsecasesRequest, ListA2PBrandRegistrationsRequest, ListA2PBrandVettingsRequest,
+    ListMessagesRequest, ListMessagingV2ChannelSendersRequest,
+    ListPricingMessagingCountriesRequest, ListTollfreeVerificationsRequest, ListUsa2pRequest,
+    MessagingGeoPermissionUpdateItem, MessagingV2Channel, Operation, RawResponse, RequestOptions,
     RequestSpec, RetryPolicy, SafeListNumberRequest, TollfreeBusinessRegistrationAuthority,
     TollfreeBusinessType, TollfreeMessageVolume, TollfreeOptInType, TollfreeUseCaseCategory,
     TollfreeVerificationStatus, TollfreeVettingProvider, TwilioClientConfig, TwilioError,
     TwilioInboundSmsPrice, TwilioOutboundSmsPrice, TwilioPricingMessaging,
     TwilioPricingMessagingCountry, TwilioPricingMessagingCountryPage,
-    TwilioPricingMessagingCountrySummary, TwilioSmsPrice, UpdateTollfreeVerificationRequest,
+    TwilioPricingMessagingCountrySummary, TwilioSmsPrice, UpdateMessagingGeoPermissionsRequest,
+    UpdateMessagingV2ChannelSenderRequest, UpdateTollfreeVerificationRequest,
 };
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -55,8 +60,8 @@ fn assert_invalid_request(err: TwilioError, expected: &str) {
 fn constructors_config_and_debug_are_ergonomic_and_redacted() {
     let config = TwilioClientConfig::new()
         .rest_base_url("https://proxy.example.test/rest")
-        .messaging_base_url("https://proxy.example.test/messaging/v1")
-        .pricing_base_url("https://proxy.example.test/pricing/v1")
+        .messaging_base_url("https://proxy.example.test/messaging")
+        .pricing_base_url("https://proxy.example.test/pricing")
         .timeout(Duration::from_secs(7))
         .user_agent("test-agent/1.0");
 
@@ -68,11 +73,11 @@ fn constructors_config_and_debug_are_ergonomic_and_redacted() {
     );
     assert_eq!(
         retained.messaging_base_url_ref(),
-        "https://proxy.example.test/messaging/v1"
+        "https://proxy.example.test/messaging"
     );
     assert_eq!(
         retained.pricing_base_url_ref(),
-        "https://proxy.example.test/pricing/v1"
+        "https://proxy.example.test/pricing"
     );
     assert!(!format!("{config:?}").contains("proxy.example.test"));
     assert!(!format!("{retained:?}").contains("proxy.example.test"));
@@ -85,6 +90,35 @@ fn constructors_config_and_debug_are_ergonomic_and_redacted() {
     assert_eq!(
         default.config().pricing_base_url_ref(),
         twilio2::DEFAULT_PRICING_BASE_URL
+    );
+}
+
+#[test]
+fn messaging_and_pricing_config_reject_versioned_product_roots() {
+    let messaging_err = RequestOptions::new()
+        .try_messaging_base_url("https://proxy.example.test/messaging/v1")
+        .unwrap_err();
+    assert!(
+        matches!(messaging_err, TwilioError::InvalidBaseUrl(message) if message.contains("product roots"))
+    );
+
+    let pricing_err = RequestOptions::new()
+        .try_pricing_base_url("https://proxy.example.test/pricing/v2")
+        .unwrap_err();
+    assert!(
+        matches!(pricing_err, TwilioError::InvalidBaseUrl(message) if message.contains("product roots"))
+    );
+
+    let constructor_err = BlockingTwilioClient::from_config_and_agent(
+        TwilioClientConfig::new()
+            .messaging_base_url("https://proxy.example.test/messaging/v3")
+            .pricing_base_url("https://proxy.example.test/pricing"),
+        test_agent(),
+    )
+    .err()
+    .expect("versioned Messaging root should fail constructor validation");
+    assert!(
+        matches!(constructor_err, TwilioError::InvalidBaseUrl(message) if message.contains("product roots"))
     );
 }
 
@@ -126,12 +160,13 @@ fn pricing_messaging_fetch_country_detail_and_pagination_work() {
     let client = blocking_client_for(&server);
     let account = client.account(test_creds());
 
-    let messaging: TwilioPricingMessaging = account.pricing().messaging().fetch().unwrap();
+    let messaging: TwilioPricingMessaging = account.pricing().v1().messaging().fetch().unwrap();
     assert_eq!(messaging.name.as_deref(), Some("Messaging"));
     assert!(!format!("{messaging:?}").contains("pricing.twilio.com"));
 
     let country: TwilioPricingMessagingCountry = account
         .pricing()
+        .v1()
         .messaging()
         .countries()
         .fetch("us")
@@ -143,7 +178,7 @@ fn pricing_messaging_fetch_country_detail_and_pagination_work() {
     let sms_price: &TwilioSmsPrice = &outbound.prices[0];
     assert_eq!(sms_price.current_price, Some(Decimal::new(45, 3)));
 
-    let countries = account.pricing().messaging().countries();
+    let countries = account.pricing().v1().messaging().countries();
     let first: TwilioPricingMessagingCountryPage = countries
         .list(
             ListPricingMessagingCountriesRequest::new()
@@ -195,6 +230,7 @@ fn pricing_messaging_countries_validate_requests_and_page_urls() {
     let countries = client
         .account(test_creds())
         .pricing()
+        .v1()
         .messaging()
         .countries();
 
@@ -240,6 +276,7 @@ fn pricing_continuation_api_errors_redact_page_url() {
     let err = blocking_client_for(&server)
         .account(test_creds())
         .pricing()
+        .v1()
         .messaging()
         .countries()
         .list_page_url(&next_page_url)
@@ -499,6 +536,8 @@ fn a2p_and_accounts_features_have_blocking_wire_shape() {
     let account = client.account(test_creds());
 
     let brand = account
+        .messaging()
+        .v1()
         .a2p_brand_registrations()
         .create(
             CreateA2PBrandRegistrationRequest::new()
@@ -509,6 +548,8 @@ fn a2p_and_accounts_features_have_blocking_wire_shape() {
         )
         .unwrap();
     let brand_page = account
+        .messaging()
+        .v1()
         .a2p_brand_registrations()
         .list(ListA2PBrandRegistrationsRequest::new().page_size(2).page(0))
         .unwrap();
@@ -517,12 +558,26 @@ fn a2p_and_accounts_features_have_blocking_wire_shape() {
         server.base_url
     );
     let brand_second = account
+        .messaging()
+        .v1()
         .a2p_brand_registrations()
         .list_page_url(&brand_next)
         .unwrap();
-    let brand_fetch = account.a2p_brand_registration("BNfetch").fetch().unwrap();
-    let brand_update = account.a2p_brand_registration("BNupdate").update().unwrap();
+    let brand_fetch = account
+        .messaging()
+        .v1()
+        .a2p_brand_registration("BNfetch")
+        .fetch()
+        .unwrap();
+    let brand_update = account
+        .messaging()
+        .v1()
+        .a2p_brand_registration("BNupdate")
+        .update()
+        .unwrap();
     let vetting = account
+        .messaging()
+        .v1()
         .a2p_brand_registration("BNbrand")
         .vettings()
         .create(
@@ -531,6 +586,8 @@ fn a2p_and_accounts_features_have_blocking_wire_shape() {
         )
         .unwrap();
     let vetting_page = account
+        .messaging()
+        .v1()
         .a2p_brand_registration("BNbrand")
         .vettings()
         .list(ListA2PBrandVettingsRequest::new().page_size(2).page(0))
@@ -540,11 +597,15 @@ fn a2p_and_accounts_features_have_blocking_wire_shape() {
         server.base_url
     );
     let vetting_second = account
+        .messaging()
+        .v1()
         .a2p_brand_registration("BNbrand")
         .vettings()
         .list_page_url(&vetting_next)
         .unwrap();
     let vetting_fetch = account
+        .messaging()
+        .v1()
         .a2p_brand_registration("BNbrand")
         .vettings()
         .fetch("VTfetch")
@@ -562,11 +623,15 @@ fn a2p_and_accounts_features_have_blocking_wire_shape() {
         .has_embedded_links(true)
         .has_embedded_phone(false);
     let usa2p = account
+        .messaging()
+        .v1()
         .service("MG123")
         .usa2p()
         .create(usa2p_request)
         .unwrap();
     let usa2p_page = account
+        .messaging()
+        .v1()
         .service("MG123")
         .usa2p()
         .list(ListUsa2pRequest::new().page_size(2).page(0))
@@ -576,17 +641,33 @@ fn a2p_and_accounts_features_have_blocking_wire_shape() {
         server.base_url
     );
     let usa2p_second = account
+        .messaging()
+        .v1()
         .service("MG123")
         .usa2p()
         .list_page_url(&usa2p_next)
         .unwrap();
-    let usa2p_fetch = account.service("MG123").usa2p().fetch("QEfetch").unwrap();
+    let usa2p_fetch = account
+        .messaging()
+        .v1()
+        .service("MG123")
+        .usa2p()
+        .fetch("QEfetch")
+        .unwrap();
     let usecases = account
+        .messaging()
+        .v1()
         .service("MG123")
         .usa2p_usecases()
         .fetch(FetchUsa2pUsecasesRequest::new().brand_registration_sid("BN123"))
         .unwrap();
-    account.service("MG123").usa2p().delete("QEdelete").unwrap();
+    account
+        .messaging()
+        .v1()
+        .service("MG123")
+        .usa2p()
+        .delete("QEdelete")
+        .unwrap();
 
     let contacts = account
         .contacts()
@@ -689,6 +770,185 @@ fn a2p_and_accounts_features_have_blocking_wire_shape() {
 }
 
 #[test]
+fn sync_messaging_v2_channel_senders_json_and_pagination_work() {
+    let runtime = runtime();
+    let next_page_url =
+        "__BASE_URL__/v2/Channels/Senders?Channel=whatsapp&PageSize=1&Page=1&PageToken=next";
+    let server = start_server(
+        &runtime,
+        vec![
+            MockResponse::json(messaging_v2_channel_sender_json("XEcreate")),
+            MockResponse::json(messaging_v2_channel_sender_page_json(
+                "XEpage1",
+                Some(next_page_url),
+            )),
+            MockResponse::json(messaging_v2_channel_sender_page_json("XEpage2", None)),
+            MockResponse::json(messaging_v2_channel_sender_json("XEfetch")),
+            MockResponse::json(messaging_v2_channel_sender_json("XEupdate")),
+            MockResponse::no_content(),
+        ],
+    );
+    let client = blocking_client_for(&server);
+    let senders = client
+        .account(test_creds())
+        .messaging()
+        .v2()
+        .channel_senders();
+
+    let created = senders
+        .create(
+            CreateMessagingV2ChannelSenderRequest::new("whatsapp:+15551234567")
+                .configuration(
+                    ChannelSenderConfiguration::new()
+                        .waba_id("WABA123")
+                        .verification_method("sms"),
+                )
+                .webhook(
+                    ChannelSenderWebhook::new()
+                        .callback_url("https://callback.example.test/channel")
+                        .callback_method(ChannelSenderHttpMethod::Post),
+                )
+                .profile(ChannelSenderProfile::new().name("Example Brand")),
+        )
+        .unwrap();
+    assert_eq!(created.sid.as_deref(), Some("XEcreate"));
+    assert_eq!(
+        created
+            .compliance
+            .as_ref()
+            .and_then(|compliance| compliance.registration_sid.as_deref()),
+        Some("CR123")
+    );
+
+    let first = senders
+        .list(ListMessagingV2ChannelSendersRequest::new(MessagingV2Channel::Whatsapp).page_size(1))
+        .unwrap();
+    assert_eq!(first.senders[0].sid.as_deref(), Some("XEpage1"));
+    let second = senders
+        .list_page_url(first.meta.next_page_url.as_deref().unwrap())
+        .unwrap();
+    assert_eq!(second.senders[0].sid.as_deref(), Some("XEpage2"));
+    senders.sender("XEfetch").fetch().unwrap();
+    senders
+        .sender("XEupdate")
+        .update(
+            UpdateMessagingV2ChannelSenderRequest::new().webhook(
+                ChannelSenderWebhook::new()
+                    .callback_url("https://callback.example.test/status")
+                    .callback_method(ChannelSenderHttpMethod::Put),
+            ),
+        )
+        .unwrap();
+    senders.sender("XEdelete").delete().unwrap();
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 6);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/v2/Channels/Senders");
+    assert_eq!(requests[0].header("content-type"), Some("application/json"));
+    let create_body: serde_json::Value = serde_json::from_str(&requests[0].body).unwrap();
+    assert_eq!(create_body["sender_id"], "whatsapp:+15551234567");
+    assert_eq!(create_body["configuration"]["waba_id"], "WABA123");
+    assert_eq!(
+        create_body["webhook"]["callback_url"],
+        "https://callback.example.test/channel"
+    );
+    assert_eq!(
+        requests[1].path,
+        "/v2/Channels/Senders?Channel=whatsapp&PageSize=1"
+    );
+    assert_eq!(
+        requests[2].path,
+        "/v2/Channels/Senders?Channel=whatsapp&PageSize=1&Page=1&PageToken=next"
+    );
+    assert_eq!(requests[3].path, "/v2/Channels/Senders/XEfetch");
+    assert_eq!(requests[4].method, "POST");
+    assert_eq!(requests[4].path, "/v2/Channels/Senders/XEupdate");
+    let update_body: serde_json::Value = serde_json::from_str(&requests[4].body).unwrap();
+    assert_eq!(update_body["webhook"]["callback_method"], "PUT");
+    assert_eq!(requests[5].method, "DELETE");
+    assert_eq!(requests[5].path, "/v2/Channels/Senders/XEdelete");
+}
+
+#[test]
+fn blocking_new_messaging_endpoints_use_expected_wire_shape() {
+    let runtime = runtime();
+    let server = start_server(
+        &runtime,
+        vec![
+            MockResponse::json(r#"{"domain_sid":"DN123"}"#),
+            MockResponse::json(r#"{"success":true}"#),
+            MockResponse::json(r#"{"success":true}"#),
+            MockResponse::json(r#"{"permissions":[]}"#),
+        ],
+    );
+    let client = blocking_client_for(&server);
+    let account = client.account(test_creds());
+
+    account
+        .messaging()
+        .v1()
+        .link_shortening()
+        .domain("DN123")
+        .certificate()
+        .fetch()
+        .unwrap();
+    account
+        .messaging()
+        .v2()
+        .typing_indicators()
+        .create(CreateMessagingV2TypingIndicatorRequest::whatsapp(
+            "wamid.secret",
+        ))
+        .unwrap();
+    account
+        .messaging()
+        .v3()
+        .typing_indicators()
+        .create(
+            CreateMessagingV3TypingIndicatorRequest::rcs("rcs:brand_agent", "rcs:+15551234567")
+                .event(AppleTypingEvent::Start),
+        )
+        .unwrap();
+    account
+        .messaging_geo_permissions()
+        .update(
+            UpdateMessagingGeoPermissionsRequest::new()
+                .permission(MessagingGeoPermissionUpdateItem::country("US", true)),
+        )
+        .unwrap();
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    for request in &requests {
+        assert_basic_auth(request);
+    }
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(
+        requests[0].path,
+        "/v1/LinkShortening/Domains/DN123/Certificate"
+    );
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(requests[1].path, "/v2/Indicators/Typing.json");
+    assert_eq!(requests[1].body, "channel=whatsapp&messageId=wamid.secret");
+    assert_eq!(requests[2].method, "POST");
+    assert_eq!(requests[2].path, "/v3/Indicators/Typing.json");
+    let typing_body: serde_json::Value = serde_json::from_str(&requests[2].body).unwrap();
+    assert_eq!(
+        typing_body,
+        serde_json::json!({
+            "channel": "RCS",
+            "from": "rcs:brand_agent",
+            "to": "rcs:+15551234567",
+            "event": "START"
+        })
+    );
+    assert_eq!(requests[3].method, "PATCH");
+    assert_eq!(requests[3].path, "/v1/Messaging/GeoPermissions");
+    assert_eq!(decoded_form_pairs(&requests[3].body).len(), 1);
+}
+
+#[test]
 fn deactivations_accept_307_and_list_validation_happens_before_transport() {
     let runtime = runtime();
     let server = start_server(
@@ -702,6 +962,8 @@ fn deactivations_accept_307_and_list_validation_happens_before_transport() {
     let account = client.account(test_creds());
 
     let deactivation = account
+        .messaging()
+        .v1()
         .deactivations()
         .fetch(FetchDeactivationsRequest::new("2025-01-31"))
         .unwrap();
@@ -778,7 +1040,7 @@ fn large_api_errors_are_truncated_redacted_and_safe_get_retries() {
     match err {
         TwilioError::Api { status, body } => {
             assert_eq!(status, 400);
-            assert!(body.len() <= 2051);
+            assert!(body.starts_with("<redacted response body; "));
             assert!(!body.contains("token"));
             assert!(!body.contains("+15551234567"));
         }
@@ -819,6 +1081,8 @@ fn tollfree_sync_repeated_form_and_query_keys_use_expected_wire_shape() {
     let account = client.account(test_creds());
 
     let created = account
+        .messaging()
+        .v1()
         .tollfree_verifications()
         .create(tollfree_create_request(
             &categories,
@@ -827,6 +1091,8 @@ fn tollfree_sync_repeated_form_and_query_keys_use_expected_wire_shape() {
         ))
         .unwrap();
     let first = account
+        .messaging()
+        .v1()
         .tollfree_verifications()
         .list(
             ListTollfreeVerificationsRequest::new()
@@ -836,10 +1102,14 @@ fn tollfree_sync_repeated_form_and_query_keys_use_expected_wire_shape() {
         )
         .unwrap();
     let second = account
+        .messaging()
+        .v1()
         .tollfree_verifications()
         .list_page_url(first.meta.next_page_url.as_deref().unwrap())
         .unwrap();
     let updated = account
+        .messaging()
+        .v1()
         .tollfree_verification("HHupdate")
         .update(
             UpdateTollfreeVerificationRequest::new()
@@ -1167,6 +1437,39 @@ fn bulk_consents_response_json() -> String {
 
 fn safe_list_json(phone_number: &str) -> String {
     format!(r#"{{"sid":"GN123","phone_number":"{phone_number}"}}"#)
+}
+
+fn messaging_v2_channel_sender_json(sid: &str) -> String {
+    format!(
+        r#"{{
+            "sid":"{sid}",
+            "sender_id":"whatsapp:+15551234567",
+            "status":"ONLINE",
+            "configuration":{{"waba_id":"WABA123","verification_method":"sms"}},
+            "webhook":{{"callback_url":"https://callback.example.test/channel","callback_method":"POST"}},
+            "compliance":{{"registration_sid":"CR123"}},
+            "url":"https://messaging.twilio.com/v2/Channels/Senders/{sid}"
+        }}"#
+    )
+}
+
+fn messaging_v2_channel_sender_page_json(sid: &str, next_page_url: Option<&str>) -> String {
+    let next = next_page_url.map_or_else(|| "null".to_owned(), |value| format!(r#""{value}""#));
+    format!(
+        r#"{{
+            "senders":[{}],
+            "meta":{{
+                "first_page_url":"__BASE_URL__/v2/Channels/Senders?Channel=whatsapp&PageSize=1&Page=0",
+                "key":"senders",
+                "next_page_url":{next},
+                "page":0,
+                "page_size":1,
+                "previous_page_url":null,
+                "url":"__BASE_URL__/v2/Channels/Senders?Channel=whatsapp&PageSize=1&Page=0"
+            }}
+        }}"#,
+        messaging_v2_channel_sender_json(sid)
+    )
 }
 
 fn pricing_messaging_json() -> String {

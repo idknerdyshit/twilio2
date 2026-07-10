@@ -7,7 +7,6 @@ use http::HeaderMap;
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use url::Url;
 
-use crate::a2p::{BlockingA2PBrandRegistrationResource, BlockingA2PBrandRegistrationsResource};
 use crate::common::{
     ApiFamily, ApiResponse, AttemptTrace, Operation, OperationTrace, ParsedConfig, RawResponse,
     RequestBody, RequestOptions, RequestSpec, RequestTarget, ResponseMeta, RetryPolicy, TwilioAuth,
@@ -17,7 +16,6 @@ use crate::common::{
     owned_sensitive_values, pricing_page_url_from_base, read_limited_reader_body,
     transport_error_from_message, v1_page_url_from_base, validate_request_spec_headers,
 };
-use crate::deactivations::BlockingDeactivationsResource;
 #[cfg(feature = "sensitive-diagnostics")]
 use crate::diagnostics::{
     SensitiveDiagnosticEvent, SensitiveDiagnostics, SensitiveRequestSnapshot,
@@ -25,15 +23,13 @@ use crate::diagnostics::{
     SensitiveTransportErrorStage,
 };
 use crate::messages::{BlockingMessageResource, BlockingMessagesResource};
+use crate::messaging::BlockingMessagingResource;
 use crate::messaging_features::{
     BlockingConsentsResource, BlockingContactsResource, BlockingGlobalSafeListResource,
+    BlockingMessagingGeoPermissionsResource,
 };
 use crate::pricing::BlockingPricingResource;
-use crate::services::{BlockingServiceResource, BlockingServicesResource};
 use crate::short_codes::{BlockingAccountShortCodeResource, BlockingAccountShortCodesResource};
-use crate::tollfree_verifications::{
-    BlockingTollfreeVerificationResource, BlockingTollfreeVerificationsResource,
-};
 
 /// A thin blocking Twilio API client over an injected [`ureq::Agent`].
 ///
@@ -328,11 +324,19 @@ impl BlockingTwilioClient {
     }
 
     pub(crate) fn messaging_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
-        endpoint_url_from_base(&self.config.messaging, segments)
+        crate::common::endpoint_url_from_versioned_base(&self.config.messaging, "v1", segments)
+    }
+
+    pub(crate) fn messaging_v2_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
+        crate::common::endpoint_url_from_versioned_base(&self.config.messaging, "v2", segments)
     }
 
     pub(crate) fn pricing_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
-        endpoint_url_from_base(&self.config.pricing, segments)
+        crate::common::endpoint_url_from_versioned_base(&self.config.pricing, "v1", segments)
+    }
+
+    pub(crate) fn pricing_v2_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
+        crate::common::endpoint_url_from_versioned_base(&self.config.pricing, "v2", segments)
     }
 
     pub(crate) fn accounts_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
@@ -356,6 +360,14 @@ impl BlockingTwilioClient {
         v1_page_url_from_base(&self.config.messaging, page_url, resource)
     }
 
+    pub(crate) fn messaging_v2_page_url(
+        &self,
+        page_url: &str,
+        resource: crate::common::MessagingV2PageResource,
+    ) -> Result<Url, TwilioError> {
+        crate::common::messaging_v2_page_url_from_base(&self.config.messaging, page_url, resource)
+    }
+
     pub(crate) fn pricing_page_url(
         &self,
         page_url: &str,
@@ -376,12 +388,33 @@ impl BlockingTwilioClient {
                         .base_url_for(spec.family)?
                         .unwrap_or_else(|| match spec.family {
                             ApiFamily::Rest => self.config.rest.clone(),
-                            ApiFamily::Messaging => self.config.messaging.clone(),
-                            ApiFamily::Pricing => self.config.pricing.clone(),
+                            ApiFamily::MessagingV1
+                            | ApiFamily::MessagingV2
+                            | ApiFamily::MessagingV3 => self.config.messaging.clone(),
+                            ApiFamily::PricingV1 | ApiFamily::PricingV2 => {
+                                self.config.pricing.clone()
+                            }
                             ApiFamily::Accounts => self.config.accounts.clone(),
                         });
                 let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
-                endpoint_url_from_base(&base, &refs)?
+                match spec.family {
+                    ApiFamily::MessagingV1 => {
+                        crate::common::endpoint_url_from_versioned_base(&base, "v1", &refs)?
+                    }
+                    ApiFamily::MessagingV2 => {
+                        crate::common::endpoint_url_from_versioned_base(&base, "v2", &refs)?
+                    }
+                    ApiFamily::MessagingV3 => {
+                        crate::common::endpoint_url_from_versioned_base(&base, "v3", &refs)?
+                    }
+                    ApiFamily::PricingV1 => {
+                        crate::common::endpoint_url_from_versioned_base(&base, "v1", &refs)?
+                    }
+                    ApiFamily::PricingV2 => {
+                        crate::common::endpoint_url_from_versioned_base(&base, "v2", &refs)?
+                    }
+                    ApiFamily::Rest | ApiFamily::Accounts => endpoint_url_from_base(&base, &refs)?,
+                }
             }
             RequestTarget::Url(url) => url.clone(),
         };
@@ -511,6 +544,10 @@ impl BlockingTwilioClient {
                 }
                 let body = encoded.finish();
                 builder.body(body.into_bytes()).map(BuiltRequest::Body)
+            }
+            RequestBody::Json(body) => {
+                builder = builder.header(CONTENT_TYPE, "application/json");
+                builder.body(body.clone()).map(BuiltRequest::Body)
             }
         }
     }
@@ -760,12 +797,6 @@ impl<'a> BlockingTwilioAccount<'a> {
         BlockingMessageResource::new(self, sid)
     }
 
-    /// Messaging v1 Deactivations collection.
-    #[must_use]
-    pub fn deactivations(self) -> BlockingDeactivationsResource<'a> {
-        BlockingDeactivationsResource::new(self)
-    }
-
     /// Legacy account-level `ShortCodes` collection.
     #[must_use]
     pub fn short_codes(self) -> BlockingAccountShortCodesResource<'a> {
@@ -778,34 +809,10 @@ impl<'a> BlockingTwilioAccount<'a> {
         BlockingAccountShortCodeResource::new(self, sid)
     }
 
-    /// Messaging Services collection.
+    /// Messaging product resources.
     #[must_use]
-    pub fn services(self) -> BlockingServicesResource<'a> {
-        BlockingServicesResource::new(self)
-    }
-
-    /// One Messaging Service resource and its subresources.
-    #[must_use]
-    pub fn service(self, sid: &'a str) -> BlockingServiceResource<'a> {
-        BlockingServiceResource::new(self, sid)
-    }
-
-    /// Messaging v1 Toll-free Verifications collection.
-    #[must_use]
-    pub fn tollfree_verifications(self) -> BlockingTollfreeVerificationsResource<'a> {
-        BlockingTollfreeVerificationsResource::new(self)
-    }
-
-    /// Messaging v1 A2P 10DLC Brand Registrations collection.
-    #[must_use]
-    pub fn a2p_brand_registrations(self) -> BlockingA2PBrandRegistrationsResource<'a> {
-        BlockingA2PBrandRegistrationsResource::new(self)
-    }
-
-    /// One Messaging v1 A2P 10DLC Brand Registration resource.
-    #[must_use]
-    pub fn a2p_brand_registration(self, sid: &'a str) -> BlockingA2PBrandRegistrationResource<'a> {
-        BlockingA2PBrandRegistrationResource::new(self, sid)
+    pub fn messaging(self) -> BlockingMessagingResource<'a> {
+        BlockingMessagingResource::new(self)
     }
 
     /// Accounts v1 Contact bulk upsert resources used by Messaging features.
@@ -826,13 +833,13 @@ impl<'a> BlockingTwilioAccount<'a> {
         BlockingGlobalSafeListResource::new(self)
     }
 
-    /// One Messaging v1 Toll-free Verification resource.
+    /// Accounts v1 Messaging `GeoPermissions` resource.
     #[must_use]
-    pub fn tollfree_verification(self, sid: &'a str) -> BlockingTollfreeVerificationResource<'a> {
-        BlockingTollfreeVerificationResource::new(self, sid)
+    pub fn messaging_geo_permissions(self) -> BlockingMessagingGeoPermissionsResource<'a> {
+        BlockingMessagingGeoPermissionsResource::new(self)
     }
 
-    /// Pricing v1 resources.
+    /// Pricing product resources.
     #[must_use]
     pub fn pricing(self) -> BlockingPricingResource<'a> {
         BlockingPricingResource::new(self)

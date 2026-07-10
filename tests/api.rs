@@ -14,19 +14,25 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use twilio2::{
-    A2PBrandType, A2PUsecase, A2PVettingProvider, AddressRetention, ApiFamily, BulkConsentsRequest,
-    BulkContactsRequest, ConsentItem, ConsentSource, ConsentStatus, ContactItem, ContentRetention,
-    CreateA2PBrandRegistrationRequest, CreateA2PBrandVettingRequest, CreateAlphaSenderRequest,
-    CreateChannelSenderRequest, CreateDestinationAlphaSenderRequest, CreateMessageFeedbackRequest,
-    CreateMessageRequest, CreateServicePhoneNumberRequest, CreateServiceRequest,
-    CreateServiceShortCodeRequest, CreateTollfreeVerificationRequest, CreateUsa2pRequest,
-    FetchDeactivationsRequest, FetchUsa2pUsecasesRequest, HttpMethod,
+    A2PBrandType, A2PUsecase, A2PVettingProvider, AddressRetention, ApiFamily, AppleTypingEvent,
+    BulkConsentsRequest, BulkContactsRequest, ChannelSenderConfiguration, ChannelSenderHttpMethod,
+    ChannelSenderProfile, ChannelSenderProfileEmail, ChannelSenderWebhook, ConsentItem,
+    ConsentSource, ConsentStatus, ContactItem, ContentRetention, CreateA2PBrandRegistrationRequest,
+    CreateA2PBrandVettingRequest, CreateAlphaSenderRequest, CreateChannelSenderRequest,
+    CreateDestinationAlphaSenderRequest, CreateMessageFeedbackRequest, CreateMessageRequest,
+    CreateMessagingV2ChannelSenderRequest, CreateMessagingV2TypingIndicatorRequest,
+    CreateMessagingV3TypingIndicatorRequest, CreatePreregisteredUsa2pRequest,
+    CreateServicePhoneNumberRequest, CreateServiceRequest, CreateServiceShortCodeRequest,
+    CreateTollfreeVerificationRequest, CreateUsa2pRequest, FetchDeactivationsRequest,
+    FetchPricingOriginBasedNumberRequest, FetchUsa2pUsecasesRequest, HttpMethod,
     ListA2PBrandRegistrationsRequest, ListA2PBrandVettingsRequest, ListAccountShortCodesRequest,
     ListDestinationAlphaSendersRequest, ListMediaRequest, ListMessagesRequest,
-    ListPricingMessagingCountriesRequest, ListServiceSubresourcesRequest, ListServicesRequest,
-    ListTollfreeVerificationsRequest, ListUsa2pRequest, MessageFeedbackOutcome, MessageIntent,
-    Operation, RawResponse, RequestOptions, RequestSpec, RetryPolicy, RiskCheck,
-    SafeListNumberRequest, ScanMessageContent, ScheduleType, ServiceUsecase,
+    ListMessagingGeoPermissionsRequest, ListMessagingV2ChannelSendersRequest,
+    ListPricingCountriesRequest, ListPricingMessagingCountriesRequest,
+    ListServiceSubresourcesRequest, ListServicesRequest, ListTollfreeVerificationsRequest,
+    ListUsa2pRequest, MessageFeedbackOutcome, MessageIntent, MessagingGeoPermissionUpdateItem,
+    MessagingV2Channel, Operation, RawResponse, RequestOptions, RequestSpec, RetryPolicy,
+    RiskCheck, SafeListNumberRequest, ScanMessageContent, ScheduleType, ServiceUsecase,
     TollfreeBusinessRegistrationAuthority, TollfreeBusinessType, TollfreeMessageVolume,
     TollfreeOptInType, TollfreeUseCaseCategory, TollfreeVerificationStatus,
     TollfreeVettingProvider, TrafficType, TwilioA2PBrandRegistration,
@@ -42,7 +48,10 @@ use twilio2::{
     TwilioServicePage, TwilioServicePhoneNumber, TwilioServicePhoneNumberPage,
     TwilioServiceShortCode, TwilioServiceShortCodePage, TwilioSmsPrice, TwilioTollfreeVerification,
     TwilioTollfreeVerificationPage, TwilioUsa2p, TwilioUsa2pPage, UpdateAccountShortCodeRequest,
-    UpdateMessageRequest, UpdateServiceRequest, UpdateTollfreeVerificationRequest, V1PageMeta,
+    UpdateLinkShorteningDomainCertificateRequest, UpdateLinkShorteningDomainConfigRequest,
+    UpdateMessageRequest, UpdateMessagingGeoPermissionsRequest,
+    UpdateMessagingV2ChannelSenderRequest, UpdateServiceRequest, UpdateTollfreeVerificationRequest,
+    V1PageMeta,
 };
 
 #[derive(Clone)]
@@ -291,14 +300,10 @@ async fn write_http_response<S: AsyncWrite + Unpin>(
     stream.shutdown().await
 }
 
-fn test_http_client() -> reqwest::Client {
+fn test_http_client(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
     install_test_crypto_provider();
 
-    reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .no_proxy()
-        .build()
-        .unwrap()
+    builder.danger_accept_invalid_certs(true).no_proxy()
 }
 
 #[cfg(feature = "rustls-no-provider")]
@@ -318,13 +323,15 @@ fn test_creds() -> &'static TwilioAuth {
 }
 
 fn client_for(server: &HttpsMockServer) -> TwilioClient {
-    TwilioClient::try_with_config(
-        test_http_client(),
-        TwilioConfig::new()
-            .rest_base_url(&server.base_url)
-            .messaging_base_url(format!("{}/v1", server.base_url))
-            .pricing_base_url(format!("{}/v1", server.base_url))
-            .accounts_base_url(format!("{}/v1", server.base_url)),
+    TwilioClient::from_config_with_http_builder(
+        TwilioClientConfig::new().base_urls(
+            TwilioConfig::new()
+                .rest_base_url(&server.base_url)
+                .messaging_base_url(&server.base_url)
+                .pricing_base_url(&server.base_url)
+                .accounts_base_url(format!("{}/v1", server.base_url)),
+        ),
+        test_http_client,
     )
     .unwrap()
 }
@@ -389,13 +396,15 @@ async fn pricing_messaging_fetch_and_country_detail_decode_prices() {
     let client = client_for(&server);
     let account = client.account(test_creds());
 
-    let messaging: TwilioPricingMessaging = account.pricing().messaging().fetch().await.unwrap();
+    let messaging: TwilioPricingMessaging =
+        account.pricing().v1().messaging().fetch().await.unwrap();
     assert_eq!(messaging.name.as_deref(), Some("Messaging"));
     assert!(messaging.links.as_ref().unwrap().contains_key("countries"));
     assert_debug_redacts(&messaging, &["pricing.twilio.com", "Countries"]);
 
     let country: TwilioPricingMessagingCountry = account
         .pricing()
+        .v1()
         .messaging()
         .countries()
         .fetch("us")
@@ -457,6 +466,7 @@ async fn pricing_messaging_countries_list_paginates_and_list_all() {
     let countries = client
         .account(test_creds())
         .pricing()
+        .v1()
         .messaging()
         .countries();
 
@@ -502,6 +512,120 @@ async fn pricing_messaging_countries_list_paginates_and_list_all() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn pricing_completion_resources_use_versioned_product_roots() {
+    let server = HttpsMockServer::start(vec![
+        MockResponse::json(pricing_generic_country_page_json(
+            "v1/PhoneNumbers/Countries",
+            None,
+            0,
+            2,
+        )),
+        MockResponse::json(pricing_phone_number_country_json("US")),
+        MockResponse::json(pricing_generic_country_page_json(
+            "v1/Voice/Countries",
+            None,
+            0,
+            2,
+        )),
+        MockResponse::json(pricing_voice_country_json("US")),
+        MockResponse::json(pricing_generic_country_page_json(
+            "v2/Voice/Countries",
+            None,
+            0,
+            2,
+        )),
+        MockResponse::json(pricing_origin_voice_country_json("US")),
+        MockResponse::json(pricing_origin_voice_number_json("15551234567")),
+        MockResponse::json(pricing_generic_country_page_json(
+            "v2/Trunking/Countries",
+            None,
+            0,
+            2,
+        )),
+        MockResponse::json(pricing_trunking_country_json("US")),
+        MockResponse::json(pricing_trunking_number_json("15551234567")),
+    ])
+    .await;
+    let client = client_for(&server);
+    let account = client.account(test_creds());
+
+    let phone_numbers = account.pricing().v1().phone_numbers().countries();
+    let phone_page = phone_numbers
+        .list(ListPricingCountriesRequest::new().page_size(2))
+        .await
+        .unwrap();
+    assert_eq!(phone_page.countries[0].iso_country.as_deref(), Some("US"));
+    let phone_country = phone_numbers.fetch("us").await.unwrap();
+    assert_eq!(phone_country.phone_number_prices.len(), 1);
+
+    let v1_voice = account.pricing().v1().voice();
+    v1_voice
+        .countries()
+        .list(ListPricingCountriesRequest::new().page_size(2))
+        .await
+        .unwrap();
+    let v1_voice_country = v1_voice.countries().fetch("US").await.unwrap();
+    assert_eq!(v1_voice_country.outbound_prefix_prices.len(), 1);
+
+    let v2_voice = account.pricing().v2().voice();
+    v2_voice
+        .countries()
+        .list(ListPricingCountriesRequest::new().page_size(2))
+        .await
+        .unwrap();
+    let v2_voice_country = v2_voice.countries().fetch("US").await.unwrap();
+    assert_eq!(v2_voice_country.outbound_prefix_prices.len(), 1);
+    let v2_voice_number = v2_voice
+        .number("15551234567")
+        .fetch(FetchPricingOriginBasedNumberRequest::new().origination_number("15550001111"))
+        .await
+        .unwrap();
+    assert_eq!(
+        v2_voice_number.destination_number.as_deref(),
+        Some("15551234567")
+    );
+
+    let trunking = account.pricing().v2().trunking();
+    trunking
+        .countries()
+        .list(ListPricingCountriesRequest::new().page_size(2))
+        .await
+        .unwrap();
+    let trunking_country = trunking.countries().fetch("US").await.unwrap();
+    assert_eq!(trunking_country.terminating_prefix_prices.len(), 1);
+    let trunking_number = trunking
+        .number("15551234567")
+        .fetch(FetchPricingOriginBasedNumberRequest::new().origination_number("15550001111"))
+        .await
+        .unwrap();
+    assert_eq!(
+        trunking_number.destination_number.as_deref(),
+        Some("15551234567")
+    );
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 10);
+    let expected_paths = [
+        "/v1/PhoneNumbers/Countries?PageSize=2",
+        "/v1/PhoneNumbers/Countries/US",
+        "/v1/Voice/Countries?PageSize=2",
+        "/v1/Voice/Countries/US",
+        "/v2/Voice/Countries?PageSize=2",
+        "/v2/Voice/Countries/US",
+        "/v2/Voice/Numbers/15551234567?OriginationNumber=15550001111",
+        "/v2/Trunking/Countries?PageSize=2",
+        "/v2/Trunking/Countries/US",
+        "/v2/Trunking/Numbers/15551234567?OriginationNumber=15550001111",
+    ];
+    for (request, path) in requests.iter().zip(expected_paths) {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, path);
+        assert_basic_auth(request);
+    }
+}
+
+#[tokio::test]
 async fn pricing_messaging_countries_validate_requests_and_page_urls() {
     let server = HttpsMockServer::start(vec![MockResponse::json(pricing_country_page_json(
         &[pricing_country_summary_json("United States", "US")],
@@ -514,6 +638,7 @@ async fn pricing_messaging_countries_validate_requests_and_page_urls() {
     let countries = client
         .account(test_creds())
         .pricing()
+        .v1()
         .messaging()
         .countries();
 
@@ -559,6 +684,7 @@ async fn pricing_continuation_api_errors_redact_page_url() {
     let err = client_for(&server)
         .account(test_creds())
         .pricing()
+        .v1()
         .messaging()
         .countries()
         .list_page_url(&next_page_url)
@@ -572,13 +698,13 @@ async fn pricing_continuation_api_errors_redact_page_url() {
 fn constructors_config_and_debug_are_ergonomic_and_redacted() {
     let config = TwilioClientConfig::new()
         .rest_base_url("https://proxy.example.test/rest")
-        .messaging_base_url("https://proxy.example.test/messaging/v1")
-        .pricing_base_url("https://proxy.example.test/pricing/v1")
+        .messaging_base_url("https://proxy.example.test/messaging")
+        .pricing_base_url("https://proxy.example.test/pricing")
         .timeout(Duration::from_secs(7))
         .user_agent("test-agent/1.0");
 
     let client =
-        TwilioClient::from_config_and_http_client(config.clone(), test_http_client()).unwrap();
+        TwilioClient::from_config_with_http_builder(config.clone(), test_http_client).unwrap();
     let retained = client.config();
     assert_eq!(
         retained.rest_base_url_ref(),
@@ -586,16 +712,16 @@ fn constructors_config_and_debug_are_ergonomic_and_redacted() {
     );
     assert_eq!(
         retained.messaging_base_url_ref(),
-        "https://proxy.example.test/messaging/v1"
+        "https://proxy.example.test/messaging"
     );
     assert_eq!(
         retained.pricing_base_url_ref(),
-        "https://proxy.example.test/pricing/v1"
+        "https://proxy.example.test/pricing"
     );
     assert_debug_redacts(&config, &["proxy.example.test"]);
     assert_debug_redacts(&retained, &["proxy.example.test"]);
 
-    let default = TwilioClient::from_http_client(test_http_client());
+    let default = TwilioClient::from_config(TwilioClientConfig::default()).unwrap();
     assert_eq!(
         default.config().rest_base_url_ref(),
         twilio2::DEFAULT_REST_BASE_URL
@@ -603,6 +729,67 @@ fn constructors_config_and_debug_are_ergonomic_and_redacted() {
     assert_eq!(
         default.config().pricing_base_url_ref(),
         twilio2::DEFAULT_PRICING_BASE_URL
+    );
+}
+
+#[tokio::test]
+async fn custom_http_builder_cannot_enable_redirects() {
+    let server = HttpsMockServer::start(vec![
+        MockResponse::status_json(307, r"{}").header("location", "/redirected"),
+    ])
+    .await;
+    let client = TwilioClient::from_config_with_http_builder(
+        TwilioClientConfig::new().base_urls(
+            TwilioConfig::new()
+                .rest_base_url(&server.base_url)
+                .messaging_base_url(&server.base_url)
+                .pricing_base_url(&server.base_url)
+                .accounts_base_url(format!("{}/v1", server.base_url)),
+        ),
+        |builder| test_http_client(builder).redirect(reqwest::redirect::Policy::limited(10)),
+    )
+    .unwrap();
+
+    let error = client
+        .account(test_creds())
+        .messages()
+        .create(
+            CreateMessageRequest::new("+15551234567")
+                .from("+15557654321")
+                .body("secret body"),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, TwilioError::Api { status: 307, .. }));
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn messaging_and_pricing_config_reject_versioned_product_roots() {
+    let messaging_err = RequestOptions::new()
+        .try_messaging_base_url("https://proxy.example.test/messaging/v1")
+        .unwrap_err();
+    assert!(
+        matches!(messaging_err, TwilioError::InvalidBaseUrl(message) if message.contains("product roots"))
+    );
+
+    let pricing_err = RequestOptions::new()
+        .try_pricing_base_url("https://proxy.example.test/pricing/v2")
+        .unwrap_err();
+    assert!(
+        matches!(pricing_err, TwilioError::InvalidBaseUrl(message) if message.contains("product roots"))
+    );
+
+    let constructor_err = TwilioClient::from_config_with_http_builder(
+        TwilioClientConfig::new()
+            .messaging_base_url("https://proxy.example.test/messaging/v3")
+            .pricing_base_url("https://proxy.example.test/pricing"),
+        test_http_client,
+    )
+    .err()
+    .expect("versioned Messaging root should fail constructor validation");
+    assert!(
+        matches!(constructor_err, TwilioError::InvalidBaseUrl(message) if message.contains("product roots"))
     );
 }
 
@@ -1089,9 +1276,23 @@ async fn services_crud_list_and_page_url_use_messaging_base() {
         .validity_period(600)
         .usecase(ServiceUsecase::Marketing)
         .use_inbound_webhook_on_number(true);
-    let created = account.services().create(create).await.unwrap();
-    let fetched = account.service("MGfetch").fetch().await.unwrap();
+    let created = account
+        .messaging()
+        .v1()
+        .services()
+        .create(create)
+        .await
+        .unwrap();
+    let fetched = account
+        .messaging()
+        .v1()
+        .service("MGfetch")
+        .fetch()
+        .await
+        .unwrap();
     let first = account
+        .messaging()
+        .v1()
         .services()
         .list(ListServicesRequest::new().page_size(2).page(0))
         .await
@@ -1100,8 +1301,16 @@ async fn services_crud_list_and_page_url_use_messaging_base() {
         "{}/v1/Services?PageSize=2&Page=1&PageToken=next",
         server.base_url
     );
-    let second = account.services().list_page_url(&next_url).await.unwrap();
+    let second = account
+        .messaging()
+        .v1()
+        .services()
+        .list_page_url(&next_url)
+        .await
+        .unwrap();
     let updated = account
+        .messaging()
+        .v1()
         .service("MGupdate")
         .update(
             UpdateServiceRequest::new()
@@ -1112,7 +1321,13 @@ async fn services_crud_list_and_page_url_use_messaging_base() {
         )
         .await
         .unwrap();
-    account.service("MGdelete").delete().await.unwrap();
+    account
+        .messaging()
+        .v1()
+        .service("MGdelete")
+        .delete()
+        .await
+        .unwrap();
 
     assert_eq!(created.sid.as_deref(), Some("MGcreate"));
     assert_eq!(fetched.sid.as_deref(), Some("MGfetch"));
@@ -1205,6 +1420,8 @@ async fn a2p_brand_registrations_and_vettings_use_messaging_v1() {
     let account = client.account(test_creds());
 
     let created = account
+        .messaging()
+        .v1()
         .a2p_brand_registrations()
         .create(
             CreateA2PBrandRegistrationRequest::new()
@@ -1217,6 +1434,8 @@ async fn a2p_brand_registrations_and_vettings_use_messaging_v1() {
         .await
         .unwrap();
     let first = account
+        .messaging()
+        .v1()
         .a2p_brand_registrations()
         .list(ListA2PBrandRegistrationsRequest::new().page_size(2).page(0))
         .await
@@ -1226,21 +1445,31 @@ async fn a2p_brand_registrations_and_vettings_use_messaging_v1() {
         server.base_url
     );
     let second = account
+        .messaging()
+        .v1()
         .a2p_brand_registrations()
         .list_page_url(&next_url)
         .await
         .unwrap();
     let fetched = account
+        .messaging()
+        .v1()
         .a2p_brand_registration("BNfetch")
         .fetch()
         .await
         .unwrap();
     let updated = account
+        .messaging()
+        .v1()
         .a2p_brand_registration("BNupdate")
         .update()
         .await
         .unwrap();
-    let vettings = account.a2p_brand_registration("BNbrand").vettings();
+    let vettings = account
+        .messaging()
+        .v1()
+        .a2p_brand_registration("BNbrand")
+        .vettings();
     let vetting_created = vettings
         .create(
             CreateA2PBrandVettingRequest::new(A2PVettingProvider::CampaignVerify)
@@ -1249,6 +1478,8 @@ async fn a2p_brand_registrations_and_vettings_use_messaging_v1() {
         .await
         .unwrap();
     let vetting_first = account
+        .messaging()
+        .v1()
         .a2p_brand_registration("BNbrand")
         .vettings()
         .list(
@@ -1264,12 +1495,16 @@ async fn a2p_brand_registrations_and_vettings_use_messaging_v1() {
         server.base_url
     );
     let vetting_second = account
+        .messaging()
+        .v1()
         .a2p_brand_registration("BNbrand")
         .vettings()
         .list_page_url(&vetting_next_url)
         .await
         .unwrap();
     let vetting_fetched = account
+        .messaging()
+        .v1()
         .a2p_brand_registration("BNbrand")
         .vettings()
         .fetch("VTfetch")
@@ -1368,7 +1603,7 @@ async fn service_usa2p_and_usecases_use_messaging_v1() {
     .await;
     let client = client_for(&server);
     let account = client.account(test_creds());
-    let usa2p = account.service("MG123").usa2p();
+    let usa2p = account.messaging().v1().service("MG123").usa2p();
     let request = CreateUsa2pRequest::new()
         .brand_registration_sid("BN123")
         .description("Transactional alerts for customer account activity.")
@@ -1391,6 +1626,8 @@ async fn service_usa2p_and_usecases_use_messaging_v1() {
 
     let created = usa2p.create(request).await.unwrap();
     let first = account
+        .messaging()
+        .v1()
         .service("MG123")
         .usa2p()
         .list(ListUsa2pRequest::new().page_size(2).page(0))
@@ -1401,24 +1638,32 @@ async fn service_usa2p_and_usecases_use_messaging_v1() {
         server.base_url
     );
     let second = account
+        .messaging()
+        .v1()
         .service("MG123")
         .usa2p()
         .list_page_url(&next_url)
         .await
         .unwrap();
     let fetched = account
+        .messaging()
+        .v1()
         .service("MG123")
         .usa2p()
         .fetch("QEfetch")
         .await
         .unwrap();
     let usecases = account
+        .messaging()
+        .v1()
         .service("MG123")
         .usa2p_usecases()
         .fetch(FetchUsa2pUsecasesRequest::new().brand_registration_sid("BN123"))
         .await
         .unwrap();
     account
+        .messaging()
+        .v1()
         .service("MG123")
         .usa2p()
         .delete("QEdelete")
@@ -1653,6 +1898,8 @@ async fn new_api_request_validation_catches_local_errors() {
     assert_invalid_request(err, "PhoneNumber");
 
     let err = account
+        .messaging()
+        .v1()
         .service("MG123")
         .usa2p()
         .create(
@@ -1670,6 +1917,8 @@ async fn new_api_request_validation_catches_local_errors() {
     assert_invalid_request(err, "MessageSamples");
 
     let err = account
+        .messaging()
+        .v1()
         .a2p_brand_registrations()
         .list(ListA2PBrandRegistrationsRequest::new().page_size(0))
         .await
@@ -1689,6 +1938,8 @@ async fn new_api_request_validation_catches_local_errors() {
     assert_invalid_request(err, "MessageIntent");
 
     let err = account
+        .messaging()
+        .v1()
         .a2p_brand_registrations()
         .create(
             CreateA2PBrandRegistrationRequest::new()
@@ -1701,6 +1952,8 @@ async fn new_api_request_validation_catches_local_errors() {
     assert_invalid_request(err, "BrandType");
 
     let err = account
+        .messaging()
+        .v1()
         .a2p_brand_registration("BN123")
         .vettings()
         .list(ListA2PBrandVettingsRequest::new().vetting_provider(A2PVettingProvider::Custom("")))
@@ -1709,6 +1962,8 @@ async fn new_api_request_validation_catches_local_errors() {
     assert_invalid_request(err, "VettingProvider");
 
     let err = account
+        .messaging()
+        .v1()
         .a2p_brand_registrations()
         .list_page_url("https://example.test/v1/a2p/BrandRegistrations?Page=1")
         .await
@@ -1716,6 +1971,8 @@ async fn new_api_request_validation_catches_local_errors() {
     assert!(matches!(err, TwilioError::InvalidResponseMetadata(_)));
 
     let err = account
+        .messaging()
+        .v1()
         .a2p_brand_registration("BN123")
         .vettings()
         .list_page_url(&format!(
@@ -1727,6 +1984,8 @@ async fn new_api_request_validation_catches_local_errors() {
     assert!(matches!(err, TwilioError::InvalidResponseMetadata(_)));
 
     let err = account
+        .messaging()
+        .v1()
         .service("MG123")
         .usa2p()
         .list_page_url(&format!(
@@ -1776,7 +2035,7 @@ async fn service_subresources_use_exact_forms_keys_and_page_urls() {
     .await;
     let client = client_for(&server);
     let account = client.account(test_creds());
-    let service = account.service("MG123");
+    let service = account.messaging().v1().service("MG123");
 
     service
         .phone_numbers()
@@ -1935,6 +2194,8 @@ async fn deactivations_and_account_short_codes_use_expected_wire_shape() {
     let account = client.account(test_creds());
 
     let deactivation = account
+        .messaging()
+        .v1()
         .deactivations()
         .fetch(FetchDeactivationsRequest::new("2023-08-13"))
         .await
@@ -2057,6 +2318,8 @@ async fn malformed_deactivation_response_is_decode_error() {
     let client = client_for(&server);
     let err = client
         .account(test_creds())
+        .messaging()
+        .v1()
         .deactivations()
         .fetch(FetchDeactivationsRequest::new("2023-08-13"))
         .await
@@ -2151,16 +2414,22 @@ async fn tollfree_verifications_crud_list_and_repeated_keys_work() {
         .vetting_provider(TollfreeVettingProvider::CampaignVerify)
         .vetting_id("vetting-123");
     let created = account
+        .messaging()
+        .v1()
         .tollfree_verifications()
         .create(create)
         .await
         .unwrap();
     let fetched = account
+        .messaging()
+        .v1()
         .tollfree_verification("HHfetch")
         .fetch()
         .await
         .unwrap();
     let first = account
+        .messaging()
+        .v1()
         .tollfree_verifications()
         .list(
             ListTollfreeVerificationsRequest::new()
@@ -2175,11 +2444,15 @@ async fn tollfree_verifications_crud_list_and_repeated_keys_work() {
         .await
         .unwrap();
     let second = account
+        .messaging()
+        .v1()
         .tollfree_verifications()
         .list_page_url(first.meta.next_page_url.as_deref().unwrap())
         .await
         .unwrap();
     let updated = account
+        .messaging()
+        .v1()
         .tollfree_verification("HHupdate")
         .update(
             UpdateTollfreeVerificationRequest::new()
@@ -2191,6 +2464,8 @@ async fn tollfree_verifications_crud_list_and_repeated_keys_work() {
         .await
         .unwrap();
     account
+        .messaging()
+        .v1()
         .tollfree_verification("HHdelete")
         .delete()
         .await
@@ -2278,6 +2553,8 @@ async fn tollfree_verifications_list_all_collects_pages_with_contract_filters() 
     let client = client_for(&server);
     let verifications = client
         .account(test_creds())
+        .messaging()
+        .v1()
         .tollfree_verifications()
         .list_all_with(
             ListTollfreeVerificationsRequest::new()
@@ -2323,6 +2600,8 @@ async fn new_endpoint_optional_setters_use_expected_form_keys() {
         .await
         .unwrap();
     account
+        .messaging()
+        .v1()
         .tollfree_verification("HHupdate")
         .update(
             UpdateTollfreeVerificationRequest::new()
@@ -2344,6 +2623,397 @@ async fn new_endpoint_optional_setters_use_expected_form_keys() {
         requests[1].body,
         "BusinessStreetAddress2=Suite+101&AdditionalInformation=Additional+context"
     );
+    for request in &requests {
+        assert_basic_auth(request);
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn messaging_completion_endpoints_use_expected_wire_shape() {
+    let server = HttpsMockServer::start(vec![
+        MockResponse::json(link_shortening_certificate_json()),
+        MockResponse::json(link_shortening_certificate_json()),
+        MockResponse::no_content(),
+        MockResponse::json(link_shortening_config_json()),
+        MockResponse::json(link_shortening_config_json()),
+        MockResponse::json(link_shortening_dns_validation_json()),
+        MockResponse::json(link_shortening_certificate_json()),
+        MockResponse::json(link_shortening_association_json()),
+        MockResponse::no_content(),
+        MockResponse::json(link_shortening_config_json()),
+        MockResponse::json(link_shortening_association_json()),
+        MockResponse::json(link_shortening_certificate_json()),
+        MockResponse::json(service_usecases_json()),
+        MockResponse::json(preregistered_usa2p_json()),
+        MockResponse::json(brand_registration_otp_json()),
+        MockResponse::json(typing_success_json()),
+        MockResponse::json(typing_success_json()),
+        MockResponse::json(typing_success_json()),
+        MockResponse::json(messaging_geo_permissions_json()),
+        MockResponse::json(messaging_geo_permissions_json()),
+    ])
+    .await;
+    let client = client_for(&server);
+    let account = client.account(test_creds());
+    let link_shortening = account.messaging().v1().link_shortening();
+    let domain = link_shortening.domain("DN123");
+
+    let cert = domain.certificate().fetch().await.unwrap();
+    assert_eq!(cert.domain_sid.as_deref(), Some("DN123"));
+    domain
+        .certificate()
+        .update(UpdateLinkShorteningDomainCertificateRequest::new(
+            "CERTsecret",
+        ))
+        .await
+        .unwrap();
+    domain.certificate().delete().await.unwrap();
+    let config = domain.config().fetch().await.unwrap();
+    assert_eq!(config.domain_sid.as_deref(), Some("DN123"));
+    domain
+        .config()
+        .update(
+            UpdateLinkShorteningDomainConfigRequest::new()
+                .callback_url("https://callback.example.test/ls")
+                .continue_on_failure(true),
+        )
+        .await
+        .unwrap();
+    let dns = domain.validate_dns().await.unwrap();
+    assert_eq!(dns.is_valid, Some(true));
+    domain.request_managed_certificate().await.unwrap();
+    domain.messaging_service("MG123").create().await.unwrap();
+    domain.messaging_service("MG123").delete().await.unwrap();
+    link_shortening
+        .messaging_service("MG123")
+        .domain_config()
+        .await
+        .unwrap();
+    link_shortening
+        .messaging_service("MG123")
+        .domain()
+        .await
+        .unwrap();
+    account
+        .messaging()
+        .v2()
+        .link_shortening()
+        .domain("DN123")
+        .certificate()
+        .fetch()
+        .await
+        .unwrap();
+    let usecases = account
+        .messaging()
+        .v1()
+        .services()
+        .usecases()
+        .fetch()
+        .await
+        .unwrap();
+    assert_eq!(usecases.usecases.len(), 1);
+    account
+        .messaging()
+        .v1()
+        .services()
+        .preregistered_usa2p()
+        .create(CreatePreregisteredUsa2pRequest::new("CAMP123", "MG123").cnp_migration(true))
+        .await
+        .unwrap();
+    account
+        .messaging()
+        .v1()
+        .a2p_brand_registration("BN123")
+        .sms_otp()
+        .create()
+        .await
+        .unwrap();
+    account
+        .messaging()
+        .v2()
+        .typing_indicators()
+        .create(CreateMessagingV2TypingIndicatorRequest::whatsapp(
+            "wamid.secret",
+        ))
+        .await
+        .unwrap();
+    account
+        .messaging()
+        .v3()
+        .typing_indicators()
+        .create(
+            CreateMessagingV3TypingIndicatorRequest::apple(
+                "whatsapp:+15551234567",
+                "whatsapp:+15557654321",
+            )
+            .event(AppleTypingEvent::Start),
+        )
+        .await
+        .unwrap();
+    account
+        .messaging()
+        .v3()
+        .typing_indicators()
+        .create(
+            CreateMessagingV3TypingIndicatorRequest::rcs("rcs:brand_agent", "rcs:+15551234567")
+                .event(AppleTypingEvent::End),
+        )
+        .await
+        .unwrap();
+    let geo_permissions = account
+        .messaging_geo_permissions()
+        .fetch(ListMessagingGeoPermissionsRequest::new().country_code("US,CA"))
+        .await
+        .unwrap();
+    assert_eq!(
+        geo_permissions.permissions[0].message.as_deref(),
+        Some("High Risk Country")
+    );
+    account
+        .messaging_geo_permissions()
+        .update(
+            UpdateMessagingGeoPermissionsRequest::new()
+                .permission(MessagingGeoPermissionUpdateItem::country("US", true))
+                .permission(MessagingGeoPermissionUpdateItem::country("CA", false)),
+        )
+        .await
+        .unwrap();
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 20);
+    let expected = [
+        ("GET", "/v1/LinkShortening/Domains/DN123/Certificate"),
+        ("POST", "/v1/LinkShortening/Domains/DN123/Certificate"),
+        ("DELETE", "/v1/LinkShortening/Domains/DN123/Certificate"),
+        ("GET", "/v1/LinkShortening/Domains/DN123/Config"),
+        ("POST", "/v1/LinkShortening/Domains/DN123/Config"),
+        ("GET", "/v1/LinkShortening/Domains/DN123/ValidateDns"),
+        (
+            "POST",
+            "/v1/LinkShortening/Domains/DN123/RequestManagedCert",
+        ),
+        (
+            "POST",
+            "/v1/LinkShortening/Domains/DN123/MessagingServices/MG123",
+        ),
+        (
+            "DELETE",
+            "/v1/LinkShortening/Domains/DN123/MessagingServices/MG123",
+        ),
+        (
+            "GET",
+            "/v1/LinkShortening/MessagingService/MG123/DomainConfig",
+        ),
+        ("GET", "/v1/LinkShortening/MessagingServices/MG123/Domain"),
+        ("GET", "/v2/LinkShortening/Domains/DN123/Certificate"),
+        ("GET", "/v1/Services/Usecases"),
+        ("POST", "/v1/Services/PreregisteredUsa2p"),
+        ("POST", "/v1/a2p/BrandRegistrations/BN123/SmsOtp"),
+        ("POST", "/v2/Indicators/Typing.json"),
+        ("POST", "/v3/Indicators/Typing.json"),
+        ("POST", "/v3/Indicators/Typing.json"),
+        ("GET", "/v1/Messaging/GeoPermissions?CountryCode=US%2CCA"),
+        ("PATCH", "/v1/Messaging/GeoPermissions"),
+    ];
+    for (request, (method, path)) in requests.iter().zip(expected) {
+        assert_eq!(request.method, method);
+        assert_eq!(request.path, path);
+        assert_basic_auth(request);
+    }
+    assert_eq!(requests[1].body, "TlsCert=CERTsecret");
+    assert_eq!(
+        requests[4].body,
+        "CallbackUrl=https%3A%2F%2Fcallback.example.test%2Fls&ContinueOnFailure=true"
+    );
+    assert_eq!(
+        requests[13].body,
+        "CampaignId=CAMP123&MessagingServiceSid=MG123&CnpMigration=true"
+    );
+    assert_eq!(requests[15].body, "channel=whatsapp&messageId=wamid.secret");
+    assert_eq!(
+        requests[16].header("content-type"),
+        Some("application/json")
+    );
+    let v3_body: serde_json::Value = serde_json::from_str(&requests[16].body).unwrap();
+    assert_eq!(
+        v3_body,
+        serde_json::json!({
+            "channel": "APPLE",
+            "from": "whatsapp:+15551234567",
+            "to": "whatsapp:+15557654321",
+            "event": "START"
+        })
+    );
+    let rcs_body: serde_json::Value = serde_json::from_str(&requests[17].body).unwrap();
+    assert_eq!(
+        rcs_body,
+        serde_json::json!({
+            "channel": "RCS",
+            "from": "rcs:brand_agent",
+            "to": "rcs:+15551234567",
+            "event": "END"
+        })
+    );
+    let permissions = decoded_form_pairs(&requests[19].body);
+    assert_eq!(permissions.len(), 2);
+    assert!(permissions.iter().all(|(key, _)| key == "Permissions"));
+    let first_permission: serde_json::Value = serde_json::from_str(&permissions[0].1).unwrap();
+    let second_permission: serde_json::Value = serde_json::from_str(&permissions[1].1).unwrap();
+    assert_eq!(
+        first_permission,
+        serde_json::json!({"country_code":"US","type":"country","enabled":true})
+    );
+    assert_eq!(
+        second_permission,
+        serde_json::json!({"country_code":"CA","type":"country","enabled":false})
+    );
+}
+
+#[tokio::test]
+async fn messaging_geo_permissions_accepts_endpoint_sized_updates() {
+    let server =
+        HttpsMockServer::start(vec![MockResponse::json(messaging_geo_permissions_json())]).await;
+    let client = client_for(&server);
+    let mut request = UpdateMessagingGeoPermissionsRequest::new();
+    for _ in 0..26 {
+        request = request.permission(MessagingGeoPermissionUpdateItem::country("US", true));
+    }
+
+    client
+        .account(test_creds())
+        .messaging_geo_permissions()
+        .update(request)
+        .await
+        .unwrap();
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "PATCH");
+    assert_eq!(requests[0].path, "/v1/Messaging/GeoPermissions");
+    let permissions = decoded_form_pairs(&requests[0].body);
+    assert_eq!(permissions.len(), 26);
+    assert!(permissions.iter().all(|(key, _)| key == "Permissions"));
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn messaging_v2_channel_senders_json_and_pagination_work() {
+    let next_page_url =
+        "__BASE_URL__/v2/Channels/Senders?Channel=whatsapp&PageSize=1&Page=1&PageToken=next";
+    let server = HttpsMockServer::start(vec![
+        MockResponse::json(messaging_v2_channel_sender_json("XEcreate")),
+        MockResponse::json(messaging_v2_channel_sender_page_json(
+            "XEpage1",
+            Some(next_page_url),
+        )),
+        MockResponse::json(messaging_v2_channel_sender_page_json("XEpage2", None)),
+        MockResponse::json(messaging_v2_channel_sender_json("XEfetch")),
+        MockResponse::json(messaging_v2_channel_sender_json("XEupdate")),
+        MockResponse::no_content(),
+    ])
+    .await;
+    let client = client_for(&server);
+    let account = client.account(test_creds());
+    let senders = account.messaging().v2().channel_senders();
+
+    let created = senders
+        .create(
+            CreateMessagingV2ChannelSenderRequest::new("whatsapp:+15551234567")
+                .configuration(
+                    ChannelSenderConfiguration::new()
+                        .waba_id("WABA123")
+                        .verification_method("sms"),
+                )
+                .webhook(
+                    ChannelSenderWebhook::new()
+                        .callback_url("https://callback.example.test/channel")
+                        .callback_method(ChannelSenderHttpMethod::Post),
+                )
+                .profile(ChannelSenderProfile::new().name("Example Brand").email(
+                    ChannelSenderProfileEmail::new("ops@example.test", "support"),
+                )),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.sid.as_deref(), Some("XEcreate"));
+    let compliance = created
+        .compliance
+        .as_ref()
+        .expect("compliance should deserialize");
+    assert_eq!(compliance.registration_sid.as_deref(), Some("CR123"));
+    assert_eq!(
+        compliance
+            .countries
+            .as_ref()
+            .and_then(|countries| countries.first())
+            .and_then(|country| country.status.as_deref()),
+        Some("ONLINE")
+    );
+    assert_debug_redacts(
+        &created,
+        &["CR123", "CRUS", "https://example.test/compliance"],
+    );
+
+    let first = senders
+        .list(ListMessagingV2ChannelSendersRequest::new(MessagingV2Channel::Whatsapp).page_size(1))
+        .await
+        .unwrap();
+    assert_eq!(first.senders[0].sid.as_deref(), Some("XEpage1"));
+    let second = senders
+        .list_page_url(first.meta.next_page_url.as_deref().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(second.senders[0].sid.as_deref(), Some("XEpage2"));
+    senders.sender("XEfetch").fetch().await.unwrap();
+    senders
+        .sender("XEupdate")
+        .update(
+            UpdateMessagingV2ChannelSenderRequest::new().webhook(
+                ChannelSenderWebhook::new()
+                    .callback_url("https://callback.example.test/status")
+                    .callback_method(ChannelSenderHttpMethod::Put),
+            ),
+        )
+        .await
+        .unwrap();
+    senders.sender("XEdelete").delete().await.unwrap();
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 6);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/v2/Channels/Senders");
+    assert_eq!(requests[0].header("content-type"), Some("application/json"));
+    let create_body: serde_json::Value = serde_json::from_str(&requests[0].body).unwrap();
+    assert_eq!(
+        create_body["sender_id"],
+        serde_json::Value::String("whatsapp:+15551234567".to_owned())
+    );
+    assert_eq!(create_body["configuration"]["waba_id"], "WABA123");
+    assert_eq!(create_body["webhook"]["callback_method"], "POST");
+    assert_eq!(
+        create_body["profile"]["emails"][0]["email"],
+        "ops@example.test"
+    );
+    assert_eq!(
+        requests[1].path,
+        "/v2/Channels/Senders?Channel=whatsapp&PageSize=1"
+    );
+    assert_eq!(
+        requests[2].path,
+        "/v2/Channels/Senders?Channel=whatsapp&PageSize=1&Page=1&PageToken=next"
+    );
+    assert_eq!(requests[3].path, "/v2/Channels/Senders/XEfetch");
+    assert_eq!(requests[4].method, "POST");
+    assert_eq!(requests[4].path, "/v2/Channels/Senders/XEupdate");
+    let update_body: serde_json::Value = serde_json::from_str(&requests[4].body).unwrap();
+    assert_eq!(
+        update_body["webhook"]["callback_url"],
+        "https://callback.example.test/status"
+    );
+    assert_eq!(update_body["webhook"]["callback_method"], "PUT");
+    assert_eq!(requests[5].method, "DELETE");
+    assert_eq!(requests[5].path, "/v2/Channels/Senders/XEdelete");
     for request in &requests {
         assert_basic_auth(request);
     }
@@ -2444,6 +3114,8 @@ async fn service_request_validation_catches_local_errors() {
     let account = client.account(test_creds());
 
     let err = account
+        .messaging()
+        .v1()
         .service("MG123")
         .update(UpdateServiceRequest::new())
         .await
@@ -2452,6 +3124,8 @@ async fn service_request_validation_catches_local_errors() {
 
     let overlong_friendly_name = "x".repeat(65);
     let err = account
+        .messaging()
+        .v1()
         .services()
         .create(CreateServiceRequest::new(&overlong_friendly_name))
         .await
@@ -2462,6 +3136,8 @@ async fn service_request_validation_catches_local_errors() {
     ));
 
     let err = account
+        .messaging()
+        .v1()
         .service("MG123")
         .update(UpdateServiceRequest::new().friendly_name(&overlong_friendly_name))
         .await
@@ -2473,6 +3149,8 @@ async fn service_request_validation_catches_local_errors() {
 
     for validity_period in [0, 36_001] {
         let err = account
+            .messaging()
+            .v1()
             .services()
             .create(CreateServiceRequest::new("valid").validity_period(validity_period))
             .await
@@ -2483,6 +3161,8 @@ async fn service_request_validation_catches_local_errors() {
         ));
 
         let err = account
+            .messaging()
+            .v1()
             .service("MG123")
             .update(UpdateServiceRequest::new().validity_period(validity_period))
             .await
@@ -2503,6 +3183,8 @@ async fn new_endpoint_validation_catches_local_errors() {
 
     assert_invalid_request(
         account
+            .messaging()
+            .v1()
             .deactivations()
             .fetch(FetchDeactivationsRequest::new("2026-02-30"))
             .await
@@ -2519,6 +3201,8 @@ async fn new_endpoint_validation_catches_local_errors() {
     );
     assert_invalid_request(
         account
+            .messaging()
+            .v1()
             .tollfree_verifications()
             .create(CreateTollfreeVerificationRequest::new())
             .await
@@ -2527,6 +3211,8 @@ async fn new_endpoint_validation_catches_local_errors() {
     );
     assert_invalid_request(
         account
+            .messaging()
+            .v1()
             .tollfree_verification("HH123")
             .update(UpdateTollfreeVerificationRequest::new())
             .await
@@ -2537,6 +3223,8 @@ async fn new_endpoint_validation_catches_local_errors() {
     let categories = [TollfreeUseCaseCategory::Raw("")];
     assert_invalid_request(
         account
+            .messaging()
+            .v1()
             .tollfree_verifications()
             .create(
                 CreateTollfreeVerificationRequest::new()
@@ -2555,10 +3243,36 @@ async fn new_endpoint_validation_catches_local_errors() {
             .unwrap_err(),
         "UseCaseCategories",
     );
+    assert_invalid_request(
+        account
+            .messaging()
+            .v2()
+            .channel_senders()
+            .create(CreateMessagingV2ChannelSenderRequest::new(
+                "whatsapp:+15551234567",
+            ))
+            .await
+            .unwrap_err(),
+        "profile.name",
+    );
+    assert_invalid_request(
+        account
+            .messaging()
+            .v2()
+            .channel_senders()
+            .create(
+                CreateMessagingV2ChannelSenderRequest::new("whatsapp:+15551234567")
+                    .profile(ChannelSenderProfile::new().name("   ")),
+            )
+            .await
+            .unwrap_err(),
+        "profile.name",
+    );
     assert!(server.requests().is_empty());
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn page_size_validation_catches_local_errors() {
     let server = HttpsMockServer::start(Vec::new()).await;
     let client = client_for(&server);
@@ -2584,6 +3298,8 @@ async fn page_size_validation_catches_local_errors() {
 
         assert_invalid_request(
             account
+                .messaging()
+                .v1()
                 .services()
                 .list(ListServicesRequest::new().page_size(page_size))
                 .await
@@ -2593,6 +3309,8 @@ async fn page_size_validation_catches_local_errors() {
 
         assert_invalid_request(
             account
+                .messaging()
+                .v1()
                 .service("MG123")
                 .phone_numbers()
                 .list(ListServiceSubresourcesRequest::new().page_size(page_size))
@@ -2603,6 +3321,8 @@ async fn page_size_validation_catches_local_errors() {
 
         assert_invalid_request(
             account
+                .messaging()
+                .v1()
                 .service("MG123")
                 .short_codes()
                 .list(ListServiceSubresourcesRequest::new().page_size(page_size))
@@ -2613,6 +3333,8 @@ async fn page_size_validation_catches_local_errors() {
 
         assert_invalid_request(
             account
+                .messaging()
+                .v1()
                 .service("MG123")
                 .alpha_senders()
                 .list(ListServiceSubresourcesRequest::new().page_size(page_size))
@@ -2623,6 +3345,8 @@ async fn page_size_validation_catches_local_errors() {
 
         assert_invalid_request(
             account
+                .messaging()
+                .v1()
                 .service("MG123")
                 .channel_senders()
                 .list(ListServiceSubresourcesRequest::new().page_size(page_size))
@@ -2633,6 +3357,8 @@ async fn page_size_validation_catches_local_errors() {
 
         assert_invalid_request(
             account
+                .messaging()
+                .v1()
                 .service("MG123")
                 .destination_alpha_senders()
                 .list(ListDestinationAlphaSendersRequest::new().page_size(page_size))
@@ -2652,6 +3378,8 @@ async fn page_size_validation_catches_local_errors() {
 
         assert_invalid_request(
             account
+                .messaging()
+                .v1()
                 .tollfree_verifications()
                 .list(ListTollfreeVerificationsRequest::new().page_size(page_size))
                 .await
@@ -2673,12 +3401,20 @@ async fn malformed_success_responses_are_decode_errors() {
     let account = client.account(test_creds());
 
     assert_decode_error(&account.message("SMbad").fetch().await.unwrap_err());
-    assert_decode_error(&account.service("MGbad").fetch().await.unwrap_err());
+    assert_decode_error(
+        &account
+            .messaging()
+            .v1()
+            .service("MGbad")
+            .fetch()
+            .await
+            .unwrap_err(),
+    );
 }
 
 #[tokio::test]
 async fn representative_api_errors_are_classified_and_sanitized() {
-    let body = r#"{"message":"denied","sid":"SMsecret","to":"+15551234567","url":"https://example.test/private"}"#;
+    let body = r#"{"message":"denied for +19990001111","sid":"SMsecret","to":"+15551234567","url":"https://example.test/private"}"#;
     let server = HttpsMockServer::start(vec![
         MockResponse::status_json(500, body),
         MockResponse::status_json(404, body),
@@ -2689,7 +3425,12 @@ async fn representative_api_errors_are_classified_and_sanitized() {
     .await;
     let client = client_for(&server);
     let account = client.account(test_creds());
-    let leaked = ["SMsecret", "+15551234567", "https://example.test/private"];
+    let leaked = [
+        "SMsecret",
+        "+15551234567",
+        "+19990001111",
+        "https://example.test/private",
+    ];
 
     assert_api_error_redacted(
         account
@@ -2716,12 +3457,20 @@ async fn representative_api_errors_are_classified_and_sanitized() {
         &leaked,
     );
     assert_api_error_redacted(
-        account.service("MGsecret").delete().await.unwrap_err(),
+        account
+            .messaging()
+            .v1()
+            .service("MGsecret")
+            .delete()
+            .await
+            .unwrap_err(),
         503,
         &leaked,
     );
     assert_api_error_redacted(
         account
+            .messaging()
+            .v1()
             .service("MGsecret")
             .phone_numbers()
             .delete("PNsecret")
@@ -2778,8 +3527,7 @@ async fn api_error_bodies_are_diagnostic_limited() {
     };
 
     assert_eq!(status, 500);
-    assert!(body.len() <= 2051, "diagnostic body was not capped");
-    assert!(body.ends_with('…'));
+    assert!(body.starts_with("<redacted response body; "));
     assert!(!body.contains(tail));
 }
 
@@ -2790,6 +3538,7 @@ fn message_debug_output_redacts_sensitive_values() {
         &message,
         &[
             "secret body",
+            "+15550001111",
             "+15557654321",
             "+15551234567",
             "AC123",
@@ -3804,6 +4553,35 @@ fn pricing_country_page_json(
     )
 }
 
+fn pricing_generic_country_page_json(
+    collection_path: &str,
+    next_page_url: Option<&str>,
+    page: u32,
+    page_size: u32,
+) -> String {
+    let next = next_page_url.map_or_else(|| "null".to_owned(), |value| format!(r#""{value}""#));
+    format!(
+        r#"{{
+            "countries":[
+                {{
+                    "country":"United States",
+                    "iso_country":"US",
+                    "url":"https://pricing.twilio.com/{collection_path}/US"
+                }}
+            ],
+            "meta":{{
+                "first_page_url":"__BASE_URL__/{collection_path}?PageSize={page_size}&Page=0",
+                "key":"countries",
+                "next_page_url":{next},
+                "page":{page},
+                "page_size":{page_size},
+                "previous_page_url":null,
+                "url":"__BASE_URL__/{collection_path}?PageSize={page_size}&Page={page}"
+            }}
+        }}"#
+    )
+}
+
 fn pricing_country_detail_json(iso_country: &str) -> String {
     format!(
         r#"{{
@@ -3825,6 +4603,249 @@ fn pricing_country_detail_json(iso_country: &str) -> String {
             "price_unit":"USD",
             "url":"https://pricing.twilio.com/v1/Messaging/Countries/{iso_country}"
         }}"#
+    )
+}
+
+fn pricing_phone_number_country_json(iso_country: &str) -> String {
+    format!(
+        r#"{{
+            "country":"United States",
+            "iso_country":"{iso_country}",
+            "phone_number_prices":[
+                {{"base_price":"1.00","current_price":"0.50","number_type":"local"}}
+            ],
+            "price_unit":"USD",
+            "url":"https://pricing.twilio.com/v1/PhoneNumbers/Countries/{iso_country}"
+        }}"#
+    )
+}
+
+fn pricing_voice_country_json(iso_country: &str) -> String {
+    format!(
+        r#"{{
+            "country":"United States",
+            "iso_country":"{iso_country}",
+            "outbound_prefix_prices":[
+                {{
+                    "prefixes":["1"],
+                    "base_price":"0.02",
+                    "current_price":"0.01",
+                    "friendly_name":"United States"
+                }}
+            ],
+            "inbound_call_prices":[
+                {{"base_price":"0.02","current_price":"0.01","number_type":"local"}}
+            ],
+            "price_unit":"USD",
+            "url":"https://pricing.twilio.com/v1/Voice/Countries/{iso_country}"
+        }}"#
+    )
+}
+
+fn pricing_origin_voice_country_json(iso_country: &str) -> String {
+    format!(
+        r#"{{
+            "country":"United States",
+            "iso_country":"{iso_country}",
+            "outbound_prefix_prices":[
+                {{
+                    "origination_prefixes":["1"],
+                    "destination_prefixes":["1"],
+                    "base_price":"0.02",
+                    "current_price":"0.01",
+                    "friendly_name":"United States"
+                }}
+            ],
+            "inbound_call_prices":[
+                {{"base_price":"0.02","current_price":"0.01","number_type":"local"}}
+            ],
+            "price_unit":"USD",
+            "url":"https://pricing.twilio.com/v2/Voice/Countries/{iso_country}"
+        }}"#
+    )
+}
+
+fn pricing_trunking_country_json(iso_country: &str) -> String {
+    format!(
+        r#"{{
+            "country":"United States",
+            "iso_country":"{iso_country}",
+            "terminating_prefix_prices":[
+                {{
+                    "origination_prefixes":["1"],
+                    "destination_prefixes":["1"],
+                    "base_price":"0.02",
+                    "current_price":"0.01",
+                    "friendly_name":"United States"
+                }}
+            ],
+            "originating_call_prices":[
+                {{"base_price":"0.02","current_price":"0.01","number_type":"local"}}
+            ],
+            "price_unit":"USD",
+            "url":"https://pricing.twilio.com/v2/Trunking/Countries/{iso_country}"
+        }}"#
+    )
+}
+
+fn pricing_origin_voice_number_json(destination_number: &str) -> String {
+    format!(
+        r#"{{
+            "destination_number":"{destination_number}",
+            "origination_number":"15550001111",
+            "country":"United States",
+            "iso_country":"US",
+            "outbound_call_prices":[
+                {{"origination_prefixes":["1"],"base_price":"0.02","current_price":"0.01"}}
+            ],
+            "inbound_call_price":{{"base_price":"0.02","current_price":"0.01","number_type":"local"}},
+            "price_unit":"USD",
+            "url":"https://pricing.twilio.com/v2/Voice/Numbers/{destination_number}"
+        }}"#
+    )
+}
+
+fn pricing_trunking_number_json(destination_number: &str) -> String {
+    format!(
+        r#"{{
+            "destination_number":"{destination_number}",
+            "origination_number":"15550001111",
+            "country":"United States",
+            "iso_country":"US",
+            "terminating_prefix_prices":[
+                {{
+                    "origination_prefixes":["1"],
+                    "destination_prefixes":["1"],
+                    "base_price":"0.02",
+                    "current_price":"0.01",
+                    "friendly_name":"United States"
+                }}
+            ],
+            "originating_call_price":{{"base_price":"0.02","current_price":"0.01","number_type":"local"}},
+            "price_unit":"USD",
+            "url":"https://pricing.twilio.com/v2/Trunking/Numbers/{destination_number}"
+        }}"#
+    )
+}
+
+fn link_shortening_certificate_json() -> String {
+    r#"{
+        "domain_sid":"DN123",
+        "certificate_sid":"CR123",
+        "domain_name":"links.example.test",
+        "managed":true,
+        "requesting":false,
+        "cert_in_validation":{"status":"valid","date_expires":"2026-08-01T00:00:00Z"},
+        "url":"https://messaging.twilio.com/v1/LinkShortening/Domains/DN123/Certificate"
+    }"#
+    .to_owned()
+}
+
+fn link_shortening_config_json() -> String {
+    r#"{
+        "domain_sid":"DN123",
+        "config_sid":"DC123",
+        "messaging_service_sid":"MG123",
+        "callback_url":"https://callback.example.test/ls",
+        "fallback_url":"https://fallback.example.test/ls",
+        "continue_on_failure":true,
+        "disable_https":false,
+        "url":"https://messaging.twilio.com/v1/LinkShortening/Domains/DN123/Config"
+    }"#
+    .to_owned()
+}
+
+fn link_shortening_dns_validation_json() -> String {
+    r#"{
+        "domain_sid":"DN123",
+        "is_valid":true,
+        "reason":"validated",
+        "url":"https://messaging.twilio.com/v1/LinkShortening/Domains/DN123/ValidateDns"
+    }"#
+    .to_owned()
+}
+
+fn link_shortening_association_json() -> String {
+    r#"{
+        "domain_sid":"DN123",
+        "messaging_service_sid":"MG123",
+        "url":"https://messaging.twilio.com/v1/LinkShortening/Domains/DN123/MessagingServices/MG123"
+    }"#
+    .to_owned()
+}
+
+fn service_usecases_json() -> String {
+    r#"{
+        "usecases":[
+            {"usecase":"marketing","description":"Marketing alerts","purpose":"Promotional messaging"}
+        ]
+    }"#
+    .to_owned()
+}
+
+fn preregistered_usa2p_json() -> String {
+    r#"{
+        "sid":"QE123",
+        "account_sid":"AC123",
+        "messaging_service_sid":"MG123",
+        "campaign_id":"CAMP123",
+        "date_created":"2026-07-05T00:00:00Z"
+    }"#
+    .to_owned()
+}
+
+fn brand_registration_otp_json() -> String {
+    r#"{
+        "account_sid":"AC123",
+        "brand_registration_sid":"BN123"
+    }"#
+    .to_owned()
+}
+
+fn typing_success_json() -> String {
+    r#"{"success":true}"#.to_owned()
+}
+
+fn messaging_geo_permissions_json() -> String {
+    r#"{
+        "permissions":[
+            {"country_code":"US","type":"country","enabled":true,"prefix":"+1","message":"High Risk Country","error_code":0,"error_messages":[]}
+        ]
+    }"#
+    .to_owned()
+}
+
+fn messaging_v2_channel_sender_json(sid: &str) -> String {
+    format!(
+        r#"{{
+            "sid":"{sid}",
+            "sender_id":"whatsapp:+15551234567",
+            "status":"ONLINE",
+            "configuration":{{"waba_id":"WABA123","verification_method":"sms"}},
+            "webhook":{{"callback_url":"https://callback.example.test/channel","callback_method":"POST"}},
+            "profile":{{"name":"Example Brand"}},
+            "compliance":{{"registration_sid":"CR123","countries":[{{"country":"US","registration_sid":"CRUS","status":"ONLINE","carriers":[{{"name":"Example Carrier","status":"APPROVED","url":"https://example.test/compliance"}}]}}]}},
+            "url":"https://messaging.twilio.com/v2/Channels/Senders/{sid}"
+        }}"#
+    )
+}
+
+fn messaging_v2_channel_sender_page_json(sid: &str, next_page_url: Option<&str>) -> String {
+    let next = next_page_url.map_or_else(|| "null".to_owned(), |value| format!(r#""{value}""#));
+    format!(
+        r#"{{
+            "senders":[{}],
+            "meta":{{
+                "first_page_url":"__BASE_URL__/v2/Channels/Senders?Channel=whatsapp&PageSize=1&Page=0",
+                "key":"senders",
+                "next_page_url":{next},
+                "page":0,
+                "page_size":1,
+                "previous_page_url":null,
+                "url":"__BASE_URL__/v2/Channels/Senders?Channel=whatsapp&PageSize=1&Page=0"
+            }}
+        }}"#,
+        messaging_v2_channel_sender_json(sid)
     )
 }
 
@@ -3868,7 +4889,7 @@ fn message_from_parts() -> TwilioMessage {
         to: Some("+15551234567".to_owned()),
         date_updated: None,
         price: Some("-0.00750".to_owned()),
-        error_message: None,
+        error_message: Some("remote error secret +15550001111".to_owned()),
         uri: Some("/2010-04-01/Accounts/AC123/Messages/SM123.json".to_owned()),
         account_sid: Some("AC123".to_owned()),
         num_media: Some("0".to_owned()),

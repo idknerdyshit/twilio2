@@ -46,11 +46,11 @@ fn captured(events: &EventCapture) -> Vec<SensitiveDiagnosticEvent> {
 }
 
 fn client_with(base_url: &str, diagnostics: SensitiveDiagnostics) -> TwilioClient {
-    TwilioClient::from_config_and_http_client(
+    TwilioClient::from_config_with_http_builder(
         TwilioClientConfig::new()
             .base_urls(twilio_config(base_url))
             .with_sensitive_diagnostics(diagnostics),
-        test_http_client(),
+        test_http_client,
     )
     .unwrap()
 }
@@ -275,7 +275,7 @@ async fn retry_attempts_emit_request_and_response_snapshots() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn large_api_error_captures_full_raw_response_but_returns_capped_public_error() {
+async fn large_api_error_captures_full_raw_response_but_returns_redacted_public_error() {
     let tail = "tail-sensitive";
     let body = format!("{}{tail}", "x".repeat(10_000));
     let server = HttpsMockServer::start(vec![MockResponse::status_json(500, body.clone())]).await;
@@ -296,8 +296,10 @@ async fn large_api_error_captures_full_raw_response_but_returns_capped_public_er
         panic!("expected API error");
     };
     assert_eq!(status, 500);
-    assert!(public_body.len() <= 2051, "{public_body}");
-    assert!(public_body.ends_with('…'), "{public_body}");
+    assert!(
+        public_body.starts_with("<redacted response body; "),
+        "{public_body}"
+    );
     assert!(!public_body.contains(tail), "{public_body}");
 
     let events = captured(&events);

@@ -89,7 +89,7 @@ impl<'a> DeactivationsResource<'a> {
         async move {
             request.validate()?;
             let sensitive_values = request.sensitive_values(self.account.creds);
-            let spec = RequestSpec::new(ApiFamily::Messaging, Method::GET, ["Deactivations"])
+            let spec = RequestSpec::new(ApiFamily::MessagingV1, Method::GET, ["Deactivations"])
                 .operation("deactivations.fetch")
                 .query("Date", request.date)
                 .accept_status(307);
@@ -137,7 +137,7 @@ impl<'a> BlockingDeactivationsResource<'a> {
         .in_scope(|| {
             request.validate()?;
             let sensitive_values = request.sensitive_values(self.account.creds);
-            let spec = RequestSpec::new(ApiFamily::Messaging, Method::GET, ["Deactivations"])
+            let spec = RequestSpec::new(ApiFamily::MessagingV1, Method::GET, ["Deactivations"])
                 .operation("deactivations.fetch")
                 .query("Date", request.date)
                 .accept_status(307);

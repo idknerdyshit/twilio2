@@ -12,6 +12,8 @@ use tokio_rustls::TlsAcceptor;
 use twilio2::BlockingTwilioClient;
 #[cfg(feature = "async")]
 use twilio2::TwilioClient;
+#[cfg(feature = "async")]
+use twilio2::TwilioClientConfig;
 use twilio2::{TwilioAuth, TwilioConfig};
 
 #[derive(Clone)]
@@ -139,14 +141,10 @@ impl HttpsMockServer {
 }
 
 #[cfg(feature = "async")]
-pub fn test_http_client() -> reqwest::Client {
+pub fn test_http_client(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
     install_test_crypto_provider();
 
-    reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .no_proxy()
-        .build()
-        .unwrap()
+    builder.danger_accept_invalid_certs(true).no_proxy()
 }
 
 #[cfg(feature = "sync")]
@@ -168,7 +166,11 @@ pub fn test_creds() -> &'static TwilioAuth {
 
 #[cfg(feature = "async")]
 pub fn client_for(server: &HttpsMockServer) -> TwilioClient {
-    TwilioClient::try_with_config(test_http_client(), twilio_config(&server.base_url)).unwrap()
+    TwilioClient::from_config_with_http_builder(
+        TwilioClientConfig::new().base_urls(twilio_config(&server.base_url)),
+        test_http_client,
+    )
+    .unwrap()
 }
 
 #[cfg(feature = "sync")]
@@ -179,8 +181,8 @@ pub fn blocking_client_for(server: &HttpsMockServer) -> BlockingTwilioClient {
 pub fn twilio_config(base_url: &str) -> TwilioConfig {
     TwilioConfig::new()
         .rest_base_url(base_url)
-        .messaging_base_url(format!("{base_url}/v1"))
-        .pricing_base_url(format!("{base_url}/v1"))
+        .messaging_base_url(base_url)
+        .pricing_base_url(base_url)
         .accounts_base_url(format!("{base_url}/v1"))
 }
 

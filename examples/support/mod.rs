@@ -7,7 +7,7 @@ use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
-use twilio2::{TwilioAuth, TwilioClient, TwilioConfig};
+use twilio2::{TwilioAuth, TwilioClient, TwilioClientConfig, TwilioConfig};
 
 pub(super) type ExampleResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -110,16 +110,14 @@ impl HttpsMockServer {
 }
 
 pub(super) fn client_for(server: &HttpsMockServer) -> ExampleResult<TwilioClient> {
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .no_proxy()
-        .build()?;
-    Ok(TwilioClient::try_with_config(
-        client,
-        TwilioConfig::new()
-            .rest_base_url(server.base_url())
-            .messaging_base_url(format!("{}/v1", server.base_url()))
-            .accounts_base_url(format!("{}/v1", server.base_url())),
+    Ok(TwilioClient::from_config_with_http_builder(
+        TwilioClientConfig::new().base_urls(
+            TwilioConfig::new()
+                .rest_base_url(server.base_url())
+                .messaging_base_url(server.base_url())
+                .accounts_base_url(format!("{}/v1", server.base_url())),
+        ),
+        |builder| builder.danger_accept_invalid_certs(true).no_proxy(),
     )?)
 }
 

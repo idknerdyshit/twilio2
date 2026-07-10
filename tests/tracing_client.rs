@@ -26,6 +26,8 @@ use tracing_subscriber::registry::LookupSpan;
 use twilio2::BlockingTwilioClient;
 #[cfg(feature = "async")]
 use twilio2::TwilioClient;
+#[cfg(feature = "async")]
+use twilio2::TwilioClientConfig;
 use twilio2::{
     ApiFamily, Operation, RawResponse, RequestOptions, RequestSpec, RetryPolicy, TwilioError,
 };
@@ -553,9 +555,9 @@ async fn retry_event_links_transient_failure_to_success() {
 #[tokio::test(flavor = "current_thread")]
 async fn transport_failure_is_redacted_and_structured() {
     let base_url = unused_https_base_url().await;
-    let client = TwilioClient::try_with_config(
-        support::test_http_client(),
-        support::twilio_config(&base_url),
+    let client = TwilioClient::from_config_with_http_builder(
+        TwilioClientConfig::new().base_urls(support::twilio_config(&base_url)),
+        support::test_http_client,
     )
     .unwrap();
     let (capture, _guard) = capture_traces();

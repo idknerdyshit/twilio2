@@ -4,7 +4,6 @@ use std::time::Instant;
 use tracing::Instrument as _;
 use url::Url;
 
-use crate::a2p::{A2PBrandRegistrationResource, A2PBrandRegistrationsResource};
 use crate::common::{
     ApiResponse, AttemptTrace, Operation, OperationTrace, ParsedConfig, RawResponse, RequestBody,
     RequestOptions, RequestSpec, RequestTarget, ResponseMeta, RetryPolicy, TwilioAuth,
@@ -14,18 +13,18 @@ use crate::common::{
     owned_sensitive_values, pricing_page_url_from_base, read_limited_response_body,
     transport_error, v1_page_url_from_base, validate_request_spec_headers,
 };
-use crate::deactivations::DeactivationsResource;
 #[cfg(feature = "sensitive-diagnostics")]
 use crate::diagnostics::{
     SensitiveDiagnosticEvent, SensitiveDiagnostics, SensitiveRequestSnapshot,
     SensitiveResponseSnapshot, SensitiveTransportErrorSnapshot, SensitiveTransportErrorStage,
 };
 use crate::messages::{MessageResource, MessagesResource};
-use crate::messaging_features::{ConsentsResource, ContactsResource, GlobalSafeListResource};
+use crate::messaging::MessagingResource;
+use crate::messaging_features::{
+    ConsentsResource, ContactsResource, GlobalSafeListResource, MessagingGeoPermissionsResource,
+};
 use crate::pricing::PricingResource;
-use crate::services::{ServiceResource, ServicesResource};
 use crate::short_codes::{AccountShortCodeResource, AccountShortCodesResource};
-use crate::tollfree_verifications::{TollfreeVerificationResource, TollfreeVerificationsResource};
 
 /// A thin Twilio API client over an injected [`reqwest::Client`].
 ///
@@ -196,11 +195,42 @@ impl TwilioClient {
     /// is invalid, or [`TwilioError::Transport`] when `reqwest::Client`
     /// construction fails.
     pub fn from_config(config: TwilioClientConfig) -> Result<Self, TwilioError> {
+        Self::from_config_with_http_builder(config, |builder| builder)
+    }
+
+    /// Build a client from construction-time config while customizing its HTTP
+    /// client builder.
+    ///
+    /// Use this to add trusted root certificates, configure a proxy, or tune
+    /// connection settings. This crate applies HTTPS-only and no-redirect
+    /// policies after the callback returns, so those request-boundary
+    /// guarantees cannot be weakened.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError::InvalidBaseUrl`] when either configured base URL
+    /// is invalid, or [`TwilioError::Transport`] when `reqwest::Client`
+    /// construction fails.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "Matches from_config and keeps construction-time configuration ownership uniform."
+    )]
+    pub fn from_config_with_http_builder<F>(
+        config: TwilioClientConfig,
+        configure: F,
+    ) -> Result<Self, TwilioError>
+    where
+        F: FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
+    {
         let http = catch_unwind(AssertUnwindSafe(|| {
-            reqwest::Client::builder()
-                .timeout(config.timeout)
-                .user_agent(config.user_agent.clone())
-                .build()
+            configure(
+                reqwest::Client::builder()
+                    .timeout(config.timeout)
+                    .user_agent(config.user_agent.clone()),
+            )
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
         }))
         .map_err(|_| {
             TwilioError::Transport(
@@ -208,27 +238,9 @@ impl TwilioClient {
             )
         })?
         .map_err(|e| transport_error(&e, &[]))?;
-        Self::from_config_and_http_client(config, http)
-    }
-
-    /// Build a client from construction-time config and a caller-provided HTTP
-    /// client.
-    ///
-    /// The supplied HTTP client is used as-is. Timeout and user-agent values in
-    /// `config` cannot be applied to an already-built `reqwest::Client`; only
-    /// the base URL configuration is retained.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TwilioError::InvalidBaseUrl`] when either base URL is invalid.
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn from_config_and_http_client(
-        config: TwilioClientConfig,
-        http: reqwest::Client,
-    ) -> Result<Self, TwilioError> {
         #[cfg(feature = "sensitive-diagnostics")]
         let sensitive_diagnostics = config.sensitive_diagnostics.clone();
-        let client = Self::try_with_config(http, config.base_urls)?;
+        let client = Self::try_with_config(http, &config.base_urls)?;
         #[cfg(feature = "sensitive-diagnostics")]
         {
             let mut client = client;
@@ -241,12 +253,6 @@ impl TwilioClient {
         }
     }
 
-    /// Build with default Twilio base URLs from a caller-provided HTTP client.
-    #[must_use]
-    pub fn from_http_client(http: reqwest::Client) -> Self {
-        Self::new(http)
-    }
-
     /// Build a client from environment variables.
     ///
     /// # Errors
@@ -257,31 +263,10 @@ impl TwilioClient {
         Self::from_config(TwilioClientConfig::from_env()?)
     }
 
-    /// Build with the default Twilio REST and Messaging API base URLs.
-    ///
-    /// # Panics
-    ///
-    /// Panics only if the library's built-in default base URLs are invalid.
-    #[must_use]
-    pub fn new(http: reqwest::Client) -> Self {
-        Self::try_with_config(http, TwilioConfig::default()).expect("invalid default Twilio config")
-    }
-
-    /// Build with explicit base URL configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TwilioError::InvalidBaseUrl`] when either base URL is empty,
-    /// not HTTPS, lacks a host, includes embedded credentials, or includes a
-    /// query string or fragment.
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn try_with_config(
-        http: reqwest::Client,
-        config: TwilioConfig,
-    ) -> Result<Self, TwilioError> {
+    fn try_with_config(http: reqwest::Client, config: &TwilioConfig) -> Result<Self, TwilioError> {
         Ok(Self {
             http,
-            config: ParsedConfig::parse(&config)?,
+            config: ParsedConfig::parse(config)?,
             #[cfg(feature = "sensitive-diagnostics")]
             sensitive_diagnostics: None,
         })
@@ -308,11 +293,19 @@ impl TwilioClient {
     }
 
     pub(crate) fn messaging_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
-        endpoint_url_from_base(&self.config.messaging, segments)
+        crate::common::endpoint_url_from_versioned_base(&self.config.messaging, "v1", segments)
+    }
+
+    pub(crate) fn messaging_v2_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
+        crate::common::endpoint_url_from_versioned_base(&self.config.messaging, "v2", segments)
     }
 
     pub(crate) fn pricing_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
-        endpoint_url_from_base(&self.config.pricing, segments)
+        crate::common::endpoint_url_from_versioned_base(&self.config.pricing, "v1", segments)
+    }
+
+    pub(crate) fn pricing_v2_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
+        crate::common::endpoint_url_from_versioned_base(&self.config.pricing, "v2", segments)
     }
 
     pub(crate) fn accounts_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
@@ -336,6 +329,14 @@ impl TwilioClient {
         v1_page_url_from_base(&self.config.messaging, page_url, resource)
     }
 
+    pub(crate) fn messaging_v2_page_url(
+        &self,
+        page_url: &str,
+        resource: crate::common::MessagingV2PageResource,
+    ) -> Result<Url, TwilioError> {
+        crate::common::messaging_v2_page_url_from_base(&self.config.messaging, page_url, resource)
+    }
+
     pub(crate) fn pricing_page_url(
         &self,
         page_url: &str,
@@ -356,12 +357,36 @@ impl TwilioClient {
                         .base_url_for(spec.family)?
                         .unwrap_or_else(|| match spec.family {
                             crate::common::ApiFamily::Rest => self.config.rest.clone(),
-                            crate::common::ApiFamily::Messaging => self.config.messaging.clone(),
-                            crate::common::ApiFamily::Pricing => self.config.pricing.clone(),
+                            crate::common::ApiFamily::MessagingV1
+                            | crate::common::ApiFamily::MessagingV2
+                            | crate::common::ApiFamily::MessagingV3 => {
+                                self.config.messaging.clone()
+                            }
+                            crate::common::ApiFamily::PricingV1
+                            | crate::common::ApiFamily::PricingV2 => self.config.pricing.clone(),
                             crate::common::ApiFamily::Accounts => self.config.accounts.clone(),
                         });
                 let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
-                endpoint_url_from_base(&base, &refs)?
+                match spec.family {
+                    crate::common::ApiFamily::MessagingV1 => {
+                        crate::common::endpoint_url_from_versioned_base(&base, "v1", &refs)?
+                    }
+                    crate::common::ApiFamily::MessagingV2 => {
+                        crate::common::endpoint_url_from_versioned_base(&base, "v2", &refs)?
+                    }
+                    crate::common::ApiFamily::MessagingV3 => {
+                        crate::common::endpoint_url_from_versioned_base(&base, "v3", &refs)?
+                    }
+                    crate::common::ApiFamily::PricingV1 => {
+                        crate::common::endpoint_url_from_versioned_base(&base, "v1", &refs)?
+                    }
+                    crate::common::ApiFamily::PricingV2 => {
+                        crate::common::endpoint_url_from_versioned_base(&base, "v2", &refs)?
+                    }
+                    crate::common::ApiFamily::Rest | crate::common::ApiFamily::Accounts => {
+                        endpoint_url_from_base(&base, &refs)?
+                    }
+                }
             }
             RequestTarget::Url(url) => url.clone(),
         };
@@ -494,6 +519,11 @@ impl TwilioClient {
                     .map(|(key, value)| (key.as_str(), value.as_str()))
                     .collect();
                 request = request.form(&form);
+            }
+            RequestBody::Json(body) => {
+                request = request
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(body.clone());
             }
         }
         request.build()
@@ -704,12 +734,6 @@ impl<'a> TwilioAccount<'a> {
         MessageResource::new(self, sid)
     }
 
-    /// Messaging v1 Deactivations collection.
-    #[must_use]
-    pub fn deactivations(self) -> DeactivationsResource<'a> {
-        DeactivationsResource::new(self)
-    }
-
     /// Legacy account-level `ShortCodes` collection.
     #[must_use]
     pub fn short_codes(self) -> AccountShortCodesResource<'a> {
@@ -722,34 +746,10 @@ impl<'a> TwilioAccount<'a> {
         AccountShortCodeResource::new(self, sid)
     }
 
-    /// Messaging Services collection.
+    /// Messaging product resources.
     #[must_use]
-    pub fn services(self) -> ServicesResource<'a> {
-        ServicesResource::new(self)
-    }
-
-    /// One Messaging Service resource and its subresources.
-    #[must_use]
-    pub fn service(self, sid: &'a str) -> ServiceResource<'a> {
-        ServiceResource::new(self, sid)
-    }
-
-    /// Messaging v1 Toll-free Verifications collection.
-    #[must_use]
-    pub fn tollfree_verifications(self) -> TollfreeVerificationsResource<'a> {
-        TollfreeVerificationsResource::new(self)
-    }
-
-    /// Messaging v1 A2P 10DLC Brand Registrations collection.
-    #[must_use]
-    pub fn a2p_brand_registrations(self) -> A2PBrandRegistrationsResource<'a> {
-        A2PBrandRegistrationsResource::new(self)
-    }
-
-    /// One Messaging v1 A2P 10DLC Brand Registration resource.
-    #[must_use]
-    pub fn a2p_brand_registration(self, sid: &'a str) -> A2PBrandRegistrationResource<'a> {
-        A2PBrandRegistrationResource::new(self, sid)
+    pub fn messaging(self) -> MessagingResource<'a> {
+        MessagingResource::new(self)
     }
 
     /// Accounts v1 Contact bulk upsert resources used by Messaging features.
@@ -770,13 +770,13 @@ impl<'a> TwilioAccount<'a> {
         GlobalSafeListResource::new(self)
     }
 
-    /// One Messaging v1 Toll-free Verification resource.
+    /// Accounts v1 Messaging `GeoPermissions` resource.
     #[must_use]
-    pub fn tollfree_verification(self, sid: &'a str) -> TollfreeVerificationResource<'a> {
-        TollfreeVerificationResource::new(self, sid)
+    pub fn messaging_geo_permissions(self) -> MessagingGeoPermissionsResource<'a> {
+        MessagingGeoPermissionsResource::new(self)
     }
 
-    /// Pricing v1 resources.
+    /// Pricing product resources.
     #[must_use]
     pub fn pricing(self) -> PricingResource<'a> {
         PricingResource::new(self)

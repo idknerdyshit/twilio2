@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [0.4.0] - 2026-07-10
+
+### Changed
+
+- **Breaking:** Messaging and Pricing custom base URLs are now product roots
+  without `/v1`, `/v2`, or `/v3`; request paths include the API version.
+- **Breaking:** Messaging and Pricing account resources now use Twilio-style
+  product/version namespaces such as `account.messaging().v1().services()` and
+  `account.pricing().v2().voice()`. Direct v1 compatibility aliases were
+  removed.
+- **Breaking:** Remove the obsolete Pricing v1 Voice Number resource; use the
+  documented Pricing v2 Voice Number resource instead.
+- **Breaking:** Replace implicit caller-provided async transport constructors
+  with `from_config_with_http_builder`, which preserves HTTPS-only and
+  no-redirect policies after customization.
+
+### Added
+
+- Add remaining published Programmable Messaging endpoint families for Link
+  Shortening, v1 service helpers, A2P SMS OTP retry, v2 channel senders, v2/v3
+  typing indicators, Accounts Messaging GeoPermissions, and Pricing v1/v2 gaps.
+- Add JSON request body support for typed operations that require it.
+
+### Fixed
+
+- Disable redirects and require HTTPS for clients constructed by the crate;
+  document the unchecked injected-client escape hatch.
+- Preserve RCS typing events, reject WhatsApp sender creation without a profile
+  name, and add missing blocking wire-contract coverage.
+
 ## [0.3.1] - 2026-07-08
 
 ### Changed

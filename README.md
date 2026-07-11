@@ -25,14 +25,16 @@ It covers:
 - Messaging v2 Channel Senders and WhatsApp typing indicators, plus Messaging
   v3 Apple and RCS typing indicators
 - Accounts v1 Messaging GeoPermissions and Messaging Service use-case helpers
+- Content v1 templates: create, fetch, list, update, delete, and WhatsApp approval
 
 The client stores only shared transport state and parsed base URLs. Account SID
 and Auth Token values, or Account SID plus API Key SID/Secret values, are passed
 through `TwilioAuth` to an account-scoped handle; credential values are redacted
-from `Debug` output. Separate Twilio products such as Content, Conversations,
-Verify, and the standalone WhatsApp Business Platform are not folded into this
-crate. RCS and WhatsApp operations are included only where Twilio exposes them
-through Programmable Messaging endpoints. Inbound webhook parsing, signature
+from `Debug` output. The Content product is included for reusable template
+lifecycle and WhatsApp approval operations. Other separate Twilio products such
+as Conversations, Verify, and the standalone WhatsApp Business Platform are not
+folded into this crate. RCS and WhatsApp operations are included only where
+Twilio exposes them through supported Messaging or Content endpoints. Inbound webhook parsing, signature
 verification, and higher-level provider traits remain intentionally outside this
 crate.
 
@@ -40,6 +42,43 @@ Custom base URLs must use HTTPS. If a custom proxy is used for Messaging v1
 pagination, it must rewrite Twilio's absolute `next_page_url` values to the
 configured proxy origin or pagination will be rejected.
 Pricing v1 pagination follows the same rule for `pricing_base_url`.
+Content v1 pagination follows the same rule for `content_base_url`.
+
+## Content templates
+
+```rust,no_run
+use twilio2::{
+    ContentText, ContentTypes, CreateContentRequest, CreateMessageRequest,
+    SubmitWhatsAppApprovalRequest, TwilioAuth, TwilioClient,
+    WhatsAppTemplateCategory,
+};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let client = TwilioClient::from_config(Default::default())?;
+let auth = TwilioAuth::auth_token("AC...", "token");
+let account = client.account(&auth);
+let template = account.content().v1().contents().create(
+    CreateContentRequest::new(
+        "order_update",
+        "en",
+        ContentTypes::new().text(ContentText::new("Hello {{1}}")),
+    ).variable("1", "Customer"),
+).await?;
+
+account.content().v1().content(template.sid.as_deref().unwrap_or_default())
+    .approval_requests()
+    .submit_whatsapp(SubmitWhatsAppApprovalRequest::new(
+        "order_update",
+        WhatsAppTemplateCategory::Utility,
+    )).await?;
+
+let message = CreateMessageRequest::new("+15551234567")
+    .content_sid(template.sid.as_deref().unwrap_or_default())
+    .content_variables_json(r#"{"1":"Ada"}"#);
+account.messages().create(message).await?;
+# Ok(())
+# }
+```
 
 ## Setup
 
@@ -209,6 +248,7 @@ let config = TwilioClientConfig::new()
     .rest_base_url("https://proxy.example.com/twilio-rest")
     .messaging_base_url("https://proxy.example.com/twilio-messaging")
     .pricing_base_url("https://proxy.example.com/twilio-pricing")
+    .content_base_url("https://proxy.example.com/twilio-content")
     .accounts_base_url("https://proxy.example.com/twilio-accounts/v1");
 let client = TwilioClient::from_config(config)?;
 # let _ = client;

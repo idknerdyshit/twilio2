@@ -183,6 +183,7 @@ pub fn twilio_config(base_url: &str) -> TwilioConfig {
         .rest_base_url(base_url)
         .messaging_base_url(base_url)
         .pricing_base_url(base_url)
+        .content_base_url(base_url)
         .accounts_base_url(format!("{base_url}/v1"))
 }
 

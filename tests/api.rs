@@ -329,6 +329,7 @@ fn client_for(server: &HttpsMockServer) -> TwilioClient {
                 .rest_base_url(&server.base_url)
                 .messaging_base_url(&server.base_url)
                 .pricing_base_url(&server.base_url)
+                .content_base_url(&server.base_url)
                 .accounts_base_url(format!("{}/v1", server.base_url)),
         ),
         test_http_client,

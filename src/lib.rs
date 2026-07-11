@@ -29,10 +29,10 @@ redaction applied to normal tracing, public errors, or [`Debug`](std::fmt::Debug
 //! Services and sender subresources, Link Shortening, A2P 10DLC resources,
 //! Deactivations, Toll-free Verifications, Accounts v1 Messaging feature APIs,
 //! standalone Messaging v2 Channel Senders, Messaging v2/v3 typing indicators,
-//! and Pricing v1/v2 Messaging, Phone Numbers, Voice, and Trunking resources.
-//! Separate Twilio products such as `Content`, `Conversations`, `Verify`, and
-//! the standalone `WhatsApp` Business Platform are not included unless exposed
-//! through Programmable Messaging endpoints or parameters.
+//! Pricing v1/v2 Messaging, Phone Numbers, Voice, and Trunking resources, and
+//! Content v1 template lifecycle and `WhatsApp` approval resources. Separate
+//! Twilio products such as `Conversations`, `Verify`, and the standalone
+//! `WhatsApp` Business Platform remain outside the crate.
 //!
 //! # Examples
 //!
@@ -243,6 +243,7 @@ mod channel_senders;
 #[cfg(feature = "async")]
 mod client;
 mod common;
+mod content;
 mod deactivations;
 #[cfg(feature = "sensitive-diagnostics")]
 mod diagnostics;
@@ -305,10 +306,27 @@ pub use common::BlockingTwilioPaginator;
 #[cfg(feature = "async")]
 pub use common::TwilioPaginator;
 pub use common::{
-    ApiFamily, ApiResponse, DEFAULT_ACCOUNTS_BASE_URL, DEFAULT_MESSAGING_BASE_URL,
-    DEFAULT_PAGE_SIZE, DEFAULT_PRICING_BASE_URL, DEFAULT_REST_BASE_URL, Operation, RawResponse,
-    RequestOptions, RequestSpec, ResponseMeta, RetryPolicy, TwilioAuth, TwilioClientConfig,
-    TwilioConfig, TwilioError, TwilioMediaContent, V1PageMeta, decode_json_response,
+    ApiFamily, ApiResponse, DEFAULT_ACCOUNTS_BASE_URL, DEFAULT_CONTENT_BASE_URL,
+    DEFAULT_MESSAGING_BASE_URL, DEFAULT_PAGE_SIZE, DEFAULT_PRICING_BASE_URL, DEFAULT_REST_BASE_URL,
+    Operation, RawResponse, RequestOptions, RequestSpec, ResponseMeta, RetryPolicy, TwilioAuth,
+    TwilioClientConfig, TwilioConfig, TwilioError, TwilioMediaContent, V1PageMeta,
+    decode_json_response,
+};
+#[cfg(feature = "sync")]
+pub use content::{
+    BlockingContentApprovalRequestsResource, BlockingContentResource,
+    BlockingContentTemplateResource, BlockingContentV1Resource, BlockingContentsResource,
+};
+pub use content::{
+    ContentAction, ContentCard, ContentMedia, ContentQuickReply, ContentText, ContentTypes,
+    CreateContentRequest, DeleteContentRequest, ListContentRequest, SubmitWhatsAppApprovalRequest,
+    TwilioContent, TwilioContentApprovalStatus, TwilioContentPage, TwilioContentTypes,
+    TwilioWhatsAppApprovalSubmission, UpdateContentRequest, WhatsAppTemplateCategory,
+};
+#[cfg(feature = "async")]
+pub use content::{
+    ContentApprovalRequestsResource, ContentResource, ContentTemplateResource, ContentV1Resource,
+    ContentsResource,
 };
 #[cfg(feature = "sync")]
 pub use deactivations::BlockingDeactivationsResource;

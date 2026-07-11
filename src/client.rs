@@ -9,10 +9,12 @@ use crate::common::{
     RequestOptions, RequestSpec, RequestTarget, ResponseMeta, RetryPolicy, TwilioAuth,
     TwilioClientConfig, TwilioConfig, TwilioError, api_error_from_body,
     api_error_from_body_read_error, attempt_error, attempt_response, attempt_span,
-    decode_json_response, endpoint_url_from_base, legacy_page_uri_url_from_base,
-    owned_sensitive_values, pricing_page_url_from_base, read_limited_response_body,
-    transport_error, v1_page_url_from_base, validate_request_spec_headers,
+    content_v1_page_url_from_base, decode_json_response, endpoint_url_from_base,
+    legacy_page_uri_url_from_base, owned_sensitive_values, pricing_page_url_from_base,
+    read_limited_response_body, transport_error, v1_page_url_from_base,
+    validate_request_spec_headers,
 };
+use crate::content::ContentResource;
 #[cfg(feature = "sensitive-diagnostics")]
 use crate::diagnostics::{
     SensitiveDiagnosticEvent, SensitiveDiagnostics, SensitiveRequestSnapshot,
@@ -346,6 +348,14 @@ impl TwilioClient {
         endpoint_url_from_base(&self.config.accounts, segments)
     }
 
+    pub(crate) fn content_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
+        crate::common::endpoint_url_from_versioned_base(&self.config.content, "v1", segments)
+    }
+
+    pub(crate) fn content_page_url(&self, page_url: &str) -> Result<Url, TwilioError> {
+        content_v1_page_url_from_base(&self.config.content, page_url)
+    }
+
     pub(crate) fn legacy_page_url(
         &self,
         page_uri: &str,
@@ -398,6 +408,7 @@ impl TwilioClient {
                             }
                             crate::common::ApiFamily::PricingV1
                             | crate::common::ApiFamily::PricingV2 => self.config.pricing.clone(),
+                            crate::common::ApiFamily::ContentV1 => self.config.content.clone(),
                             crate::common::ApiFamily::Accounts => self.config.accounts.clone(),
                         });
                 let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
@@ -416,6 +427,9 @@ impl TwilioClient {
                     }
                     crate::common::ApiFamily::PricingV2 => {
                         crate::common::endpoint_url_from_versioned_base(&base, "v2", &refs)?
+                    }
+                    crate::common::ApiFamily::ContentV1 => {
+                        crate::common::endpoint_url_from_versioned_base(&base, "v1", &refs)?
                     }
                     crate::common::ApiFamily::Rest | crate::common::ApiFamily::Accounts => {
                         endpoint_url_from_base(&base, &refs)?
@@ -456,6 +470,7 @@ impl TwilioClient {
             && (options.rest_base_url.is_some()
                 || options.messaging_base_url.is_some()
                 || options.pricing_base_url.is_some()
+                || options.content_base_url.is_some()
                 || options.accounts_base_url.is_some()
                 || !options.query.is_empty())
         {
@@ -760,6 +775,12 @@ impl<'a> TwilioAccount<'a> {
     #[must_use]
     pub fn messages(self) -> MessagesResource<'a> {
         MessagesResource::new(self)
+    }
+
+    /// Twilio Content product resources.
+    #[must_use]
+    pub fn content(self) -> ContentResource<'a> {
+        ContentResource::new(self)
     }
 
     /// One Message resource and its subresources.

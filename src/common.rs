@@ -37,6 +37,9 @@ pub const DEFAULT_MESSAGING_BASE_URL: &str = "https://messaging.twilio.com";
 /// Default Twilio Pricing API product root, with no trailing slash.
 pub const DEFAULT_PRICING_BASE_URL: &str = "https://pricing.twilio.com";
 
+/// Default Twilio Content API product root, with no trailing slash.
+pub const DEFAULT_CONTENT_BASE_URL: &str = "https://content.twilio.com";
+
 /// Default Twilio Accounts v1 API root, with no trailing slash.
 pub const DEFAULT_ACCOUNTS_BASE_URL: &str = "https://accounts.twilio.com/v1";
 
@@ -226,6 +229,7 @@ pub struct TwilioConfig {
     rest: String,
     messaging: String,
     pricing: String,
+    content: String,
     accounts: String,
 }
 
@@ -235,6 +239,7 @@ impl fmt::Debug for TwilioConfig {
             .field("rest_base_url", &redacted_str(&self.rest))
             .field("messaging_base_url", &redacted_str(&self.messaging))
             .field("pricing_base_url", &redacted_str(&self.pricing))
+            .field("content_base_url", &redacted_str(&self.content))
             .field("accounts_base_url", &redacted_str(&self.accounts))
             .finish()
     }
@@ -246,6 +251,7 @@ impl Default for TwilioConfig {
             rest: DEFAULT_REST_BASE_URL.to_owned(),
             messaging: DEFAULT_MESSAGING_BASE_URL.to_owned(),
             pricing: DEFAULT_PRICING_BASE_URL.to_owned(),
+            content: DEFAULT_CONTENT_BASE_URL.to_owned(),
             accounts: DEFAULT_ACCOUNTS_BASE_URL.to_owned(),
         }
     }
@@ -277,6 +283,7 @@ impl TwilioConfig {
             env_var("TWILIO_MESSAGING_BASE_URL")?,
             env_var("TWILIO_PRICING_BASE_URL")?,
             env_var("TWILIO_ACCOUNTS_BASE_URL")?,
+            env_var("TWILIO_CONTENT_BASE_URL")?,
         )
     }
 
@@ -285,6 +292,7 @@ impl TwilioConfig {
         messaging_base_url: Option<String>,
         pricing_base_url: Option<String>,
         accounts_base_url: Option<String>,
+        content_base_url: Option<String>,
     ) -> Result<Self, TwilioError> {
         let mut config = Self::new();
         if let Some(rest_base_url) = non_empty_env(rest_base_url) {
@@ -304,6 +312,11 @@ impl TwilioConfig {
         if let Some(accounts_base_url) = non_empty_env(accounts_base_url) {
             normalize_base_url(&accounts_base_url).map_err(TwilioError::InvalidBaseUrl)?;
             config = config.accounts_base_url(accounts_base_url);
+        }
+        if let Some(content_base_url) = non_empty_env(content_base_url) {
+            normalize_product_root_base_url(&content_base_url)
+                .map_err(TwilioError::InvalidBaseUrl)?;
+            config = config.content_base_url(content_base_url);
         }
         Ok(config)
     }
@@ -326,6 +339,13 @@ impl TwilioConfig {
     #[must_use]
     pub fn pricing_base_url(mut self, value: impl Into<String>) -> Self {
         self.pricing = value.into();
+        self
+    }
+
+    /// Set the Twilio Content API product root.
+    #[must_use]
+    pub fn content_base_url(mut self, value: impl Into<String>) -> Self {
+        self.content = value.into();
         self
     }
 
@@ -352,6 +372,12 @@ impl TwilioConfig {
     #[must_use]
     pub fn pricing_base_url_ref(&self) -> &str {
         &self.pricing
+    }
+
+    /// Return the normalized public Content API base URL string.
+    #[must_use]
+    pub fn content_base_url_ref(&self) -> &str {
+        &self.content
     }
 
     /// Return the normalized public Accounts API base URL string.
@@ -444,6 +470,7 @@ impl TwilioClientConfig {
             env_var("TWILIO_MESSAGING_BASE_URL")?,
             env_var("TWILIO_PRICING_BASE_URL")?,
             env_var("TWILIO_ACCOUNTS_BASE_URL")?,
+            env_var("TWILIO_CONTENT_BASE_URL")?,
             env_var("TWILIO_TIMEOUT_SECS")?,
             env_var("TWILIO_USER_AGENT")?,
         )
@@ -454,6 +481,7 @@ impl TwilioClientConfig {
         messaging_base_url: Option<String>,
         pricing_base_url: Option<String>,
         accounts_base_url: Option<String>,
+        content_base_url: Option<String>,
         timeout_secs: Option<String>,
         user_agent: Option<String>,
     ) -> Result<Self, TwilioError> {
@@ -462,6 +490,7 @@ impl TwilioClientConfig {
             messaging_base_url,
             pricing_base_url,
             accounts_base_url,
+            content_base_url,
         )?;
         let mut config = Self::new().base_urls(base_urls);
         if let Some(timeout_secs) = non_empty_env(timeout_secs) {
@@ -508,6 +537,13 @@ impl TwilioClientConfig {
     #[must_use]
     pub fn pricing_base_url(mut self, value: impl Into<String>) -> Self {
         self.base_urls = self.base_urls.pricing_base_url(value);
+        self
+    }
+
+    /// Set the Twilio Content API product root.
+    #[must_use]
+    pub fn content_base_url(mut self, value: impl Into<String>) -> Self {
+        self.base_urls = self.base_urls.content_base_url(value);
         self
     }
 
@@ -596,6 +632,7 @@ pub(crate) struct ParsedConfig {
     pub(crate) rest: Url,
     pub(crate) messaging: Url,
     pub(crate) pricing: Url,
+    pub(crate) content: Url,
     pub(crate) accounts: Url,
 }
 
@@ -607,6 +644,8 @@ impl ParsedConfig {
                 .map_err(TwilioError::InvalidBaseUrl)?,
             pricing: normalize_product_root_base_url(&config.pricing)
                 .map_err(TwilioError::InvalidBaseUrl)?,
+            content: normalize_product_root_base_url(&config.content)
+                .map_err(TwilioError::InvalidBaseUrl)?,
             accounts: normalize_base_url(&config.accounts).map_err(TwilioError::InvalidBaseUrl)?,
         })
     }
@@ -616,6 +655,7 @@ impl ParsedConfig {
             rest: public_base_url(&self.rest),
             messaging: public_base_url(&self.messaging),
             pricing: public_base_url(&self.pricing),
+            content: public_base_url(&self.content),
             accounts: public_base_url(&self.accounts),
         }
     }
@@ -701,6 +741,8 @@ pub enum ApiFamily {
     PricingV1,
     /// Twilio Pricing v2 API under [`DEFAULT_PRICING_BASE_URL`].
     PricingV2,
+    /// Twilio Content v1 API under [`DEFAULT_CONTENT_BASE_URL`].
+    ContentV1,
     /// Twilio Accounts v1 API rooted at [`DEFAULT_ACCOUNTS_BASE_URL`].
     Accounts,
 }
@@ -799,6 +841,7 @@ pub struct RequestOptions {
     pub(crate) rest_base_url: Option<String>,
     pub(crate) messaging_base_url: Option<String>,
     pub(crate) pricing_base_url: Option<String>,
+    pub(crate) content_base_url: Option<String>,
     pub(crate) accounts_base_url: Option<String>,
     pub(crate) timeout: Option<Duration>,
     pub(crate) retry: Option<RetryPolicy>,
@@ -876,6 +919,25 @@ impl RequestOptions {
         let value = value.as_ref();
         normalize_product_root_base_url(value).map_err(TwilioError::InvalidBaseUrl)?;
         self.pricing_base_url = Some(value.to_owned());
+        Ok(self)
+    }
+
+    /// Override the Content API product root for this request.
+    #[must_use]
+    pub fn content_base_url(mut self, value: impl Into<String>) -> Self {
+        self.content_base_url = Some(value.into());
+        self
+    }
+
+    /// Override the Content API product root for this request, validating it now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError::InvalidBaseUrl`] when the URL is invalid.
+    pub fn try_content_base_url(mut self, value: impl AsRef<str>) -> Result<Self, TwilioError> {
+        let value = value.as_ref();
+        normalize_product_root_base_url(value).map_err(TwilioError::InvalidBaseUrl)?;
+        self.content_base_url = Some(value.to_owned());
         Ok(self)
     }
 
@@ -1049,6 +1111,12 @@ impl RequestOptions {
                 .map(normalize_product_root_base_url)
                 .transpose()
                 .map_err(TwilioError::InvalidBaseUrl),
+            ApiFamily::ContentV1 => self
+                .content_base_url
+                .as_deref()
+                .map(normalize_product_root_base_url)
+                .transpose()
+                .map_err(TwilioError::InvalidBaseUrl),
             ApiFamily::Accounts => self
                 .accounts_base_url
                 .as_deref()
@@ -1082,6 +1150,14 @@ impl fmt::Debug for RequestOptions {
             .field(
                 "pricing_base_url",
                 &if self.pricing_base_url.is_some() {
+                    Some(REDACTED)
+                } else {
+                    None
+                },
+            )
+            .field(
+                "content_base_url",
+                &if self.content_base_url.is_some() {
                     Some(REDACTED)
                 } else {
                     None
@@ -2308,6 +2384,26 @@ pub(crate) fn messaging_v2_page_url_from_base(
     Ok(url)
 }
 
+pub(crate) fn content_v1_page_url_from_base(
+    base_url: &Url,
+    next_page_url: &str,
+) -> Result<Url, TwilioError> {
+    let url = page_url_from_base(base_url, next_page_url)?;
+    validate_page_origin(base_url, &url, "next_page_url")?;
+    let segments = api_segments(base_url, &url)?;
+    if segments != ["v1", "Content"] {
+        return Err(TwilioError::InvalidResponseMetadata(
+            "next_page_url is not a Content page".to_owned(),
+        ));
+    }
+    validate_page_query_keys(
+        &url,
+        |key| matches!(key, "PageSize" | "Page" | "PageToken"),
+        |_key| false,
+    )?;
+    Ok(url)
+}
+
 fn page_url_from_base(base_url: &Url, page_url: &str) -> Result<Url, TwilioError> {
     if page_url.starts_with('/') && !page_url.starts_with("//") {
         let mut url = base_url.clone();
@@ -2700,6 +2796,23 @@ pub(crate) fn validate_messaging_v2_next_page_continuation(
                 "next_page_url changed {key} query parameter"
             )));
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_content_v1_next_page_continuation(
+    current_url: &Url,
+    next_url: &Url,
+) -> Result<(), TwilioError> {
+    if current_url.path() != next_url.path() {
+        return Err(TwilioError::InvalidResponseMetadata(
+            "next_page_url changed resource path".to_owned(),
+        ));
+    }
+    if !stable_page_query_matches(current_url, next_url, "PageSize") {
+        return Err(TwilioError::InvalidResponseMetadata(
+            "next_page_url changed PageSize query parameter".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -3305,6 +3418,7 @@ mod tests {
             Some("https://proxy.example.test/messaging".to_owned()),
             Some("https://proxy.example.test/pricing".to_owned()),
             Some("https://proxy.example.test/accounts/v1".to_owned()),
+            Some("https://proxy.example.test/content".to_owned()),
         )
         .expect("valid env base URLs should parse");
         assert_eq!(base.rest_base_url_ref(), "https://proxy.example.test/rest");
@@ -3326,6 +3440,7 @@ mod tests {
             Some("https://proxy.example.test/messaging".to_owned()),
             Some("https://proxy.example.test/pricing".to_owned()),
             Some("https://proxy.example.test/accounts/v1".to_owned()),
+            Some("https://proxy.example.test/content".to_owned()),
             Some("9".to_owned()),
             Some("test-agent/2.0".to_owned()),
         )
@@ -3336,9 +3451,16 @@ mod tests {
         assert!(!rendered.contains("proxy.example.test"));
         assert!(rendered.contains("<redacted>"));
 
-        let err =
-            TwilioClientConfig::from_env_values(None, None, None, None, Some("0".to_owned()), None)
-                .expect_err("zero timeout should fail");
+        let err = TwilioClientConfig::from_env_values(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("0".to_owned()),
+            None,
+        )
+        .expect_err("zero timeout should fail");
         assert!(matches!(err, TwilioError::InvalidRequest(_)));
     }
 

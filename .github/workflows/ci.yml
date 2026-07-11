@@ -43,6 +43,12 @@ jobs:
       - name: Test rustls no-provider feature
         run: cargo test --locked --no-default-features --features async,rustls-no-provider
 
+      - name: Test blocking native TLS feature
+        run: cargo test --locked --no-default-features --features sync,native-tls
+
+      - name: Test blocking rustls no-provider feature
+        run: cargo test --locked --no-default-features --features sync,rustls-no-provider
+
       - name: Verify package
         if: matrix.os == 'ubuntu-latest'
         run: cargo publish --dry-run --locked

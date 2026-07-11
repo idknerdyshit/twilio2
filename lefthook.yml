@@ -3,4 +3,10 @@ pre-push:
     cargo-fmt:
       run: cargo fmt --check
     cargo-clippy:
-      run: cargo clippy --all-targets -- -D warnings
+      run: cargo clippy --locked --all-targets --all-features -- -D warnings
+    cargo-test-all-features:
+      run: cargo test --locked --all-features
+    cargo-test-sync-native-tls:
+      run: cargo test --locked --no-default-features --features sync,native-tls
+    cargo-test-sync-rustls-no-provider:
+      run: cargo test --locked --no-default-features --features sync,rustls-no-provider

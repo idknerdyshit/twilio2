@@ -17,17 +17,18 @@ use twilio2::{
     ConsentSource, ConsentStatus, ContactItem, CreateA2PBrandRegistrationRequest,
     CreateA2PBrandVettingRequest, CreateMessageRequest, CreateMessagingV2ChannelSenderRequest,
     CreateMessagingV2TypingIndicatorRequest, CreateMessagingV3TypingIndicatorRequest,
-    CreateTollfreeVerificationRequest, CreateUsa2pRequest, FetchDeactivationsRequest,
-    FetchUsa2pUsecasesRequest, ListA2PBrandRegistrationsRequest, ListA2PBrandVettingsRequest,
-    ListMessagesRequest, ListMessagingV2ChannelSendersRequest,
-    ListPricingMessagingCountriesRequest, ListTollfreeVerificationsRequest, ListUsa2pRequest,
-    MessagingGeoPermissionUpdateItem, MessagingV2Channel, Operation, RawResponse, RequestOptions,
-    RequestSpec, RetryPolicy, SafeListNumberRequest, TollfreeBusinessRegistrationAuthority,
-    TollfreeBusinessType, TollfreeMessageVolume, TollfreeOptInType, TollfreeUseCaseCategory,
-    TollfreeVerificationStatus, TollfreeVettingProvider, TwilioClientConfig, TwilioError,
-    TwilioInboundSmsPrice, TwilioOutboundSmsPrice, TwilioPricingMessaging,
-    TwilioPricingMessagingCountry, TwilioPricingMessagingCountryPage,
-    TwilioPricingMessagingCountrySummary, TwilioSmsPrice, UpdateMessagingGeoPermissionsRequest,
+    CreatePreregisteredUsa2pRequest, CreateTollfreeVerificationRequest, CreateUsa2pRequest,
+    FetchDeactivationsRequest, FetchUsa2pUsecasesRequest, ListA2PBrandRegistrationsRequest,
+    ListA2PBrandVettingsRequest, ListMessagesRequest, ListMessagingGeoPermissionsRequest,
+    ListMessagingV2ChannelSendersRequest, ListPricingMessagingCountriesRequest,
+    ListTollfreeVerificationsRequest, ListUsa2pRequest, MessagingGeoPermissionUpdateItem,
+    MessagingV2Channel, Operation, RawResponse, RequestOptions, RequestSpec, RetryPolicy,
+    SafeListNumberRequest, TollfreeBusinessRegistrationAuthority, TollfreeBusinessType,
+    TollfreeMessageVolume, TollfreeOptInType, TollfreeUseCaseCategory, TollfreeVerificationStatus,
+    TollfreeVettingProvider, TwilioClientConfig, TwilioError, TwilioInboundSmsPrice,
+    TwilioOutboundSmsPrice, TwilioPricingMessaging, TwilioPricingMessagingCountry,
+    TwilioPricingMessagingCountryPage, TwilioPricingMessagingCountrySummary, TwilioSmsPrice,
+    UpdateLinkShorteningDomainConfigRequest, UpdateMessagingGeoPermissionsRequest,
     UpdateMessagingV2ChannelSenderRequest, UpdateTollfreeVerificationRequest,
 };
 
@@ -871,15 +872,18 @@ fn sync_messaging_v2_channel_senders_json_and_pagination_work() {
 }
 
 #[test]
-fn blocking_new_messaging_endpoints_use_expected_wire_shape() {
+fn blocking_link_shortening_and_service_helpers_use_expected_wire_shape() {
     let runtime = runtime();
     let server = start_server(
         &runtime,
         vec![
             MockResponse::json(r#"{"domain_sid":"DN123"}"#),
+            MockResponse::json(r#"{"domain_sid":"DN123"}"#),
+            MockResponse::json(r#"{"domain_sid":"DN123","messaging_service_sid":"MG123"}"#),
+            MockResponse::no_content(),
+            MockResponse::json(r#"{"usecases":[{"usecase":"notifications"}]}"#),
+            MockResponse::json(r#"{"sid":"QE123"}"#),
             MockResponse::json(r#"{"success":true}"#),
-            MockResponse::json(r#"{"success":true}"#),
-            MockResponse::json(r#"{"permissions":[]}"#),
         ],
     );
     let client = blocking_client_for(&server);
@@ -893,6 +897,94 @@ fn blocking_new_messaging_endpoints_use_expected_wire_shape() {
         .certificate()
         .fetch()
         .unwrap();
+    let link_shortening = account.messaging().v1().link_shortening();
+    link_shortening
+        .domain("DN123")
+        .config()
+        .update(
+            UpdateLinkShorteningDomainConfigRequest::new()
+                .callback_url("https://callback.example.test/ls")
+                .continue_on_failure(true),
+        )
+        .unwrap();
+    link_shortening
+        .domain("DN123")
+        .messaging_service("MG123")
+        .create()
+        .unwrap();
+    link_shortening
+        .domain("DN123")
+        .messaging_service("MG123")
+        .delete()
+        .unwrap();
+    let usecases = account
+        .messaging()
+        .v1()
+        .services()
+        .usecases()
+        .fetch()
+        .unwrap();
+    assert_eq!(usecases.usecases.len(), 1);
+    account
+        .messaging()
+        .v1()
+        .services()
+        .preregistered_usa2p()
+        .create(CreatePreregisteredUsa2pRequest::new("CAMP123", "MG123").cnp_migration(true))
+        .unwrap();
+    account
+        .messaging()
+        .v1()
+        .a2p_brand_registration("BN123")
+        .sms_otp()
+        .create()
+        .unwrap();
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 7);
+    for request in &requests {
+        assert_basic_auth(request);
+    }
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(
+        requests[0].path,
+        "/v1/LinkShortening/Domains/DN123/Certificate"
+    );
+    assert_eq!(requests[1].path, "/v1/LinkShortening/Domains/DN123/Config");
+    assert_eq!(
+        requests[1].body,
+        "CallbackUrl=https%3A%2F%2Fcallback.example.test%2Fls&ContinueOnFailure=true"
+    );
+    assert_eq!(
+        requests[2].path,
+        "/v1/LinkShortening/Domains/DN123/MessagingServices/MG123"
+    );
+    assert_eq!(requests[3].method, "DELETE");
+    assert_eq!(requests[4].path, "/v1/Services/Usecases");
+    assert_eq!(requests[5].path, "/v1/Services/PreregisteredUsa2p");
+    assert_eq!(
+        requests[5].body,
+        "CampaignId=CAMP123&MessagingServiceSid=MG123&CnpMigration=true"
+    );
+    assert_eq!(requests[6].path, "/v1/a2p/BrandRegistrations/BN123/SmsOtp");
+}
+
+#[test]
+fn blocking_typing_and_geo_permissions_use_expected_wire_shape() {
+    let runtime = runtime();
+    let server = start_server(
+        &runtime,
+        vec![
+            MockResponse::json(r#"{"success":true}"#),
+            MockResponse::json(r#"{"success":true}"#),
+            MockResponse::json(r#"{"success":true}"#),
+            MockResponse::json(r#"{"permissions":[]}"#),
+            MockResponse::json(r#"{"permissions":[]}"#),
+        ],
+    );
+    let client = blocking_client_for(&server);
+    let account = client.account(test_creds());
+
     account
         .messaging()
         .v2()
@@ -906,9 +998,25 @@ fn blocking_new_messaging_endpoints_use_expected_wire_shape() {
         .v3()
         .typing_indicators()
         .create(
+            CreateMessagingV3TypingIndicatorRequest::apple(
+                "whatsapp:+15551234567",
+                "whatsapp:+15557654321",
+            )
+            .event(AppleTypingEvent::End),
+        )
+        .unwrap();
+    account
+        .messaging()
+        .v3()
+        .typing_indicators()
+        .create(
             CreateMessagingV3TypingIndicatorRequest::rcs("rcs:brand_agent", "rcs:+15551234567")
                 .event(AppleTypingEvent::Start),
         )
+        .unwrap();
+    account
+        .messaging_geo_permissions()
+        .fetch(ListMessagingGeoPermissionsRequest::new().country_code("US,CA"))
         .unwrap();
     account
         .messaging_geo_permissions()
@@ -919,18 +1027,15 @@ fn blocking_new_messaging_endpoints_use_expected_wire_shape() {
         .unwrap();
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
     for request in &requests {
         assert_basic_auth(request);
     }
-    assert_eq!(requests[0].method, "GET");
-    assert_eq!(
-        requests[0].path,
-        "/v1/LinkShortening/Domains/DN123/Certificate"
-    );
-    assert_eq!(requests[1].method, "POST");
-    assert_eq!(requests[1].path, "/v2/Indicators/Typing.json");
-    assert_eq!(requests[1].body, "channel=whatsapp&messageId=wamid.secret");
+    assert_eq!(requests[0].path, "/v2/Indicators/Typing.json");
+    assert_eq!(requests[0].body, "channel=whatsapp&messageId=wamid.secret");
+    assert_eq!(requests[1].path, "/v3/Indicators/Typing.json");
+    let apple_body: serde_json::Value = serde_json::from_str(&requests[1].body).unwrap();
+    assert_eq!(apple_body["channel"], "APPLE");
     assert_eq!(requests[2].method, "POST");
     assert_eq!(requests[2].path, "/v3/Indicators/Typing.json");
     let typing_body: serde_json::Value = serde_json::from_str(&requests[2].body).unwrap();
@@ -943,9 +1048,14 @@ fn blocking_new_messaging_endpoints_use_expected_wire_shape() {
             "event": "START"
         })
     );
-    assert_eq!(requests[3].method, "PATCH");
-    assert_eq!(requests[3].path, "/v1/Messaging/GeoPermissions");
-    assert_eq!(decoded_form_pairs(&requests[3].body).len(), 1);
+    assert_eq!(requests[3].method, "GET");
+    assert_eq!(
+        requests[3].path,
+        "/v1/Messaging/GeoPermissions?CountryCode=US%2CCA"
+    );
+    assert_eq!(requests[4].method, "PATCH");
+    assert_eq!(requests[4].path, "/v1/Messaging/GeoPermissions");
+    assert_eq!(decoded_form_pairs(&requests[4].body).len(), 1);
 }
 
 #[test]

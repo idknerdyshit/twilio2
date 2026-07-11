@@ -985,6 +985,47 @@ async fn messages_list_all_collects_pages_with_existing_continuation_validation(
 }
 
 #[tokio::test]
+async fn media_list_all_collects_pages_with_existing_continuation_validation() {
+    let next_page_uri = "/2010-04-01/Accounts/AC123/Messages/SM123/Media.json?DateCreated=2026-07-01&PageSize=1&Page=1&PageToken=next";
+    let first_page = format!(
+        r#"{{"media_list":[{}],"next_page_uri":"{next_page_uri}"}}"#,
+        media_json("MEpage1")
+    );
+    let second_page = format!(
+        r#"{{"media_list":[{}],"next_page_uri":null}}"#,
+        media_json("MEpage2")
+    );
+    let server = HttpsMockServer::start(vec![
+        MockResponse::json(first_page),
+        MockResponse::json(second_page),
+    ])
+    .await;
+    let client = client_for(&server);
+    let media = client
+        .account(test_creds())
+        .message("SM123")
+        .media()
+        .list_all_with(
+            ListMediaRequest::new()
+                .date_created("2026-07-01")
+                .page_size(1),
+        )
+        .collect_all()
+        .await
+        .unwrap();
+
+    assert_eq!(media.len(), 2);
+    assert_eq!(media[0].sid.as_deref(), Some("MEpage1"));
+    assert_eq!(media[1].sid.as_deref(), Some("MEpage2"));
+    let requests = server.requests();
+    assert_eq!(
+        requests[0].path,
+        "/2010-04-01/Accounts/AC123/Messages/SM123/Media.json?DateCreated=2026-07-01&PageSize=1"
+    );
+    assert_eq!(requests[1].path, next_page_uri);
+}
+
+#[tokio::test]
 async fn messages_builder_sends_expected_requests() {
     let server = HttpsMockServer::start(vec![
         MockResponse::created_json(full_message_json("SMcreated", "queued", "hello")),
@@ -2174,6 +2215,41 @@ async fn service_subresources_use_exact_forms_keys_and_page_urls() {
 }
 
 #[tokio::test]
+async fn service_subresource_list_all_collects_pages() {
+    let next_page_url =
+        "__BASE_URL__/v1/Services/MG123/PhoneNumbers?PageSize=2&Page=1&PageToken=next";
+    let server = HttpsMockServer::start(vec![
+        MockResponse::json(phone_number_page_json("PNpage1", Some(next_page_url))),
+        MockResponse::json(phone_number_page_json("PNpage2", None)),
+    ])
+    .await;
+    let client = client_for(&server);
+    let phone_numbers = client
+        .account(test_creds())
+        .messaging()
+        .v1()
+        .service("MG123")
+        .phone_numbers()
+        .list_all_with(ListServiceSubresourcesRequest::new().page_size(2))
+        .collect_all()
+        .await
+        .unwrap();
+
+    assert_eq!(phone_numbers.len(), 2);
+    assert_eq!(phone_numbers[0].sid.as_deref(), Some("PNpage1"));
+    assert_eq!(phone_numbers[1].sid.as_deref(), Some("PNpage2"));
+    let requests = server.requests();
+    assert_eq!(
+        requests[0].path,
+        "/v1/Services/MG123/PhoneNumbers?PageSize=2"
+    );
+    assert_eq!(
+        requests[1].path,
+        "/v1/Services/MG123/PhoneNumbers?PageSize=2&Page=1&PageToken=next"
+    );
+}
+
+#[tokio::test]
 async fn deactivations_and_account_short_codes_use_expected_wire_shape() {
     let next_page_uri = "/2010-04-01/Accounts/AC123/SMS/ShortCodes.json?FriendlyName=Alerts&ShortCode=12345&PageSize=2&Page=1&PageToken=next";
     let server = HttpsMockServer::start(vec![
@@ -3017,6 +3093,43 @@ async fn messaging_v2_channel_senders_json_and_pagination_work() {
     for request in &requests {
         assert_basic_auth(request);
     }
+}
+
+#[tokio::test]
+async fn messaging_v2_channel_senders_list_all_collects_pages() {
+    let next_page_url =
+        "__BASE_URL__/v2/Channels/Senders?Channel=whatsapp&PageSize=50&Page=1&PageToken=next";
+    let server = HttpsMockServer::start(vec![
+        MockResponse::json(messaging_v2_channel_sender_page_json(
+            "XEpage1",
+            Some(next_page_url),
+        )),
+        MockResponse::json(messaging_v2_channel_sender_page_json("XEpage2", None)),
+    ])
+    .await;
+    let client = client_for(&server);
+    let senders = client
+        .account(test_creds())
+        .messaging()
+        .v2()
+        .channel_senders()
+        .list_all(MessagingV2Channel::Whatsapp)
+        .collect_all()
+        .await
+        .unwrap();
+
+    assert_eq!(senders.len(), 2);
+    assert_eq!(senders[0].sid.as_deref(), Some("XEpage1"));
+    assert_eq!(senders[1].sid.as_deref(), Some("XEpage2"));
+    let requests = server.requests();
+    assert_eq!(
+        requests[0].path,
+        "/v2/Channels/Senders?Channel=whatsapp&PageSize=50"
+    );
+    assert_eq!(
+        requests[1].path,
+        "/v2/Channels/Senders?Channel=whatsapp&PageSize=50&Page=1&PageToken=next"
+    );
 }
 
 #[tokio::test]

@@ -20,7 +20,7 @@ use crate::common::{
 use crate::diagnostics::{
     SensitiveDiagnosticEvent, SensitiveDiagnostics, SensitiveRequestSnapshot,
     SensitiveRequestSnapshotParts, SensitiveResponseSnapshot, SensitiveTransportErrorSnapshot,
-    SensitiveTransportErrorStage,
+    SensitiveTransportErrorStage, emit_sensitive_trace,
 };
 use crate::messages::{BlockingMessageResource, BlockingMessagesResource};
 use crate::messaging::BlockingMessagingResource;
@@ -41,6 +41,8 @@ pub struct BlockingTwilioClient {
     pub(crate) config: ParsedConfig,
     #[cfg(feature = "sensitive-diagnostics")]
     pub(crate) sensitive_diagnostics: Option<SensitiveDiagnostics>,
+    #[cfg(feature = "sensitive-diagnostics")]
+    pub(crate) sensitive_tracing: bool,
 }
 
 pub(crate) struct BlockingRawAttemptResponse {
@@ -103,6 +105,7 @@ struct SensitiveBuildError<'a> {
 #[derive(Debug)]
 struct SensitiveAttempt<'a> {
     diagnostics: Option<&'a SensitiveDiagnostics>,
+    sensitive_tracing: bool,
     request: Option<SensitiveRequestSnapshot>,
 }
 
@@ -118,6 +121,12 @@ impl<'a> SensitiveAttempt<'a> {
             .or(client.sensitive_diagnostics.as_ref())
     }
 
+    fn tracing_for(client: &BlockingTwilioClient, options: &RequestOptions) -> bool {
+        options
+            .sensitive_tracing
+            .unwrap_or(client.sensitive_tracing)
+    }
+
     fn new(
         client: &'a BlockingTwilioClient,
         options: &'a RequestOptions,
@@ -127,7 +136,8 @@ impl<'a> SensitiveAttempt<'a> {
         max_retries: u32,
     ) -> Self {
         let diagnostics = Self::diagnostics_for(client, options);
-        let snapshot = diagnostics.map(|_| match request {
+        let sensitive_tracing = Self::tracing_for(client, options);
+        let snapshot = (diagnostics.is_some() || sensitive_tracing).then(|| match request {
             BuiltRequest::Empty(request) => {
                 SensitiveRequestSnapshot::from_parts(SensitiveRequestSnapshotParts {
                     method: request.method().clone(),
@@ -155,14 +165,17 @@ impl<'a> SensitiveAttempt<'a> {
         });
         Self {
             diagnostics,
+            sensitive_tracing,
             request: snapshot,
         }
     }
 
     fn build_error(error: SensitiveBuildError<'a>) {
-        let Some(diagnostics) = Self::diagnostics_for(error.client, error.options) else {
+        let diagnostics = Self::diagnostics_for(error.client, error.options);
+        let sensitive_tracing = Self::tracing_for(error.client, error.options);
+        if diagnostics.is_none() && !sensitive_tracing {
             return;
-        };
+        }
         let request = SensitiveRequestSnapshot {
             method: error.method,
             url: error.url.to_string(),
@@ -173,43 +186,58 @@ impl<'a> SensitiveAttempt<'a> {
             headers: HeaderMap::default(),
             body: None,
         };
-        diagnostics.record(SensitiveDiagnosticEvent::TransportError(
-            SensitiveTransportErrorSnapshot::new(
-                request,
-                SensitiveTransportErrorStage::BuildRequest,
-                error.error,
-            ),
+        let event = SensitiveDiagnosticEvent::TransportError(SensitiveTransportErrorSnapshot::new(
+            request,
+            SensitiveTransportErrorStage::BuildRequest,
+            error.error,
         ));
+        if sensitive_tracing {
+            emit_sensitive_trace(&event);
+        }
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.record(event);
+        }
+    }
+
+    fn record(&self, event: SensitiveDiagnosticEvent) {
+        if self.sensitive_tracing {
+            emit_sensitive_trace(&event);
+        }
+        if let Some(diagnostics) = self.diagnostics {
+            diagnostics.record(event);
+        }
     }
 
     fn request(&self) {
-        let (Some(diagnostics), Some(request)) = (self.diagnostics, &self.request) else {
+        let Some(request) = &self.request else {
             return;
         };
-        diagnostics.record(SensitiveDiagnosticEvent::Request(request.clone()));
+        self.record(SensitiveDiagnosticEvent::Request(request.clone()));
     }
 
     fn response(&self, raw: &RawResponse) {
-        let (Some(diagnostics), Some(request)) = (self.diagnostics, &self.request) else {
+        let Some(request) = &self.request else {
             return;
         };
-        diagnostics.record(SensitiveDiagnosticEvent::Response(
+        self.record(SensitiveDiagnosticEvent::Response(
             SensitiveResponseSnapshot::from_raw(request, raw),
         ));
     }
 
     fn transport_error(&self, stage: SensitiveTransportErrorStage, error: String) {
-        let (Some(diagnostics), Some(request)) = (self.diagnostics, &self.request) else {
+        let Some(request) = &self.request else {
             return;
         };
-        diagnostics.record(SensitiveDiagnosticEvent::TransportError(
+        self.record(SensitiveDiagnosticEvent::TransportError(
             SensitiveTransportErrorSnapshot::new(request.clone(), stage, error),
         ));
     }
 
     fn captures_events(&self) -> bool {
-        self.diagnostics
-            .is_some_and(SensitiveDiagnostics::captures_events)
+        self.sensitive_tracing
+            || self
+                .diagnostics
+                .is_some_and(SensitiveDiagnostics::captures_events)
     }
 }
 
@@ -246,11 +274,14 @@ impl BlockingTwilioClient {
     ) -> Result<Self, TwilioError> {
         #[cfg(feature = "sensitive-diagnostics")]
         let sensitive_diagnostics = config.sensitive_diagnostics.clone();
+        #[cfg(feature = "sensitive-diagnostics")]
+        let sensitive_tracing = config.sensitive_tracing;
         let client = Self::try_with_config(agent, config.base_urls)?;
         #[cfg(feature = "sensitive-diagnostics")]
         {
             let mut client = client;
             client.sensitive_diagnostics = sensitive_diagnostics;
+            client.sensitive_tracing = sensitive_tracing;
             Ok(client)
         }
         #[cfg(not(feature = "sensitive-diagnostics"))]
@@ -300,6 +331,8 @@ impl BlockingTwilioClient {
             config: ParsedConfig::parse(&config)?,
             #[cfg(feature = "sensitive-diagnostics")]
             sensitive_diagnostics: None,
+            #[cfg(feature = "sensitive-diagnostics")]
+            sensitive_tracing: false,
         })
     }
 

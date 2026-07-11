@@ -39,12 +39,15 @@ use support::{blocking_client_for, test_agent};
 use support::{client_for, unused_https_base_url};
 
 const TRACE_TARGET: &str = "twilio2::trace";
+#[cfg(feature = "sensitive-diagnostics")]
+const SENSITIVE_TRACE_TARGET: &str = "twilio2::sensitive";
 const SAFE_TRACE_LABEL: &str = "job-42";
 const SENSITIVE_TRACE_LABEL: &str = "trace-secret-label";
 const SENSITIVE_RESPONSE: &str = "+15551234567";
 
 #[derive(Clone, Debug)]
 struct CapturedEvent {
+    target: String,
     level: String,
     fields: BTreeMap<String, String>,
 }
@@ -72,6 +75,17 @@ impl TraceCapture {
             .collect()
     }
 
+    #[cfg(feature = "sensitive-diagnostics")]
+    fn sensitive_events_named(&self, name: &str) -> Vec<CapturedEvent> {
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.target == SENSITIVE_TRACE_TARGET && event.field("event") == name)
+            .cloned()
+            .collect()
+    }
+
     fn one_event(&self, name: &str) -> CapturedEvent {
         let events = self.events_named(name);
         assert_eq!(events.len(), 1, "expected exactly one {name}: {events:#?}");
@@ -88,10 +102,26 @@ impl TraceCapture {
             .collect()
     }
 
+    #[cfg(feature = "sensitive-diagnostics")]
     fn dump(&self) -> String {
         format!(
             "events={:#?}\nspans={:#?}",
             self.events.lock().unwrap(),
+            self.spans.lock().unwrap()
+        )
+    }
+
+    fn normal_dump(&self) -> String {
+        let events = self
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.target == TRACE_TARGET)
+            .cloned()
+            .collect::<Vec<_>>();
+        format!(
+            "events={events:#?}\nspans={:#?}",
             self.spans.lock().unwrap()
         )
     }
@@ -205,13 +235,17 @@ where
     }
 
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        if event.metadata().target() != TRACE_TARGET {
+        if event.metadata().target() != TRACE_TARGET
+            && (!cfg!(feature = "sensitive-diagnostics")
+                || event.metadata().target() != "twilio2::sensitive")
+        {
             return;
         }
 
         let mut visitor = FieldVisitor::default();
         event.record(&mut visitor);
         self.capture.events.lock().unwrap().push(CapturedEvent {
+            target: event.metadata().target().to_owned(),
             level: event.metadata().level().to_string(),
             fields: visitor.fields,
         });
@@ -358,13 +392,35 @@ fn assert_single_span(capture: &TraceCapture, trace_label: Option<&str>) {
 }
 
 fn assert_redacted(capture: &TraceCapture, forbidden: &[&str]) {
-    let dump = capture.dump();
+    let dump = capture.normal_dump();
     for forbidden in forbidden {
         assert!(
             !dump.contains(forbidden),
             "trace leaked {forbidden:?}:\n{dump}"
         );
     }
+}
+
+#[cfg(all(feature = "async", feature = "sensitive-diagnostics"))]
+fn sensitive_client_for(server: &HttpsMockServer, enabled: bool) -> TwilioClient {
+    let config = TwilioClientConfig::new().base_urls(support::twilio_config(&server.base_url));
+    let config = if enabled {
+        config.with_sensitive_tracing()
+    } else {
+        config
+    };
+    TwilioClient::from_config_with_http_builder(config, support::test_http_client).unwrap()
+}
+
+#[cfg(all(feature = "sync", feature = "sensitive-diagnostics"))]
+fn sensitive_blocking_client_for(server: &HttpsMockServer, enabled: bool) -> BlockingTwilioClient {
+    let config = TwilioClientConfig::new().base_urls(support::twilio_config(&server.base_url));
+    let config = if enabled {
+        config.with_sensitive_tracing()
+    } else {
+        config
+    };
+    BlockingTwilioClient::from_config_and_agent(config, test_agent()).unwrap()
 }
 
 #[cfg(feature = "async")]
@@ -442,6 +498,177 @@ async fn safe_trace_label_is_emitted_and_sensitive_label_is_omitted() {
             .contains_key("trace_label")
     );
     assert_single_span(&sensitive_capture, None);
+}
+
+#[cfg(all(feature = "async", feature = "sensitive-diagnostics"))]
+#[tokio::test(flavor = "current_thread")]
+async fn sensitive_tracing_requires_opt_in_and_request_overrides_client_default() {
+    let enabled_server = HttpsMockServer::start(vec![
+        MockResponse::json(format!(r#"{{"value":"disabled {SENSITIVE_RESPONSE}"}}"#)),
+        MockResponse::json(format!(r#"{{"value":"enabled {SENSITIVE_RESPONSE}"}}"#)),
+    ])
+    .await;
+    let request_server = HttpsMockServer::start(vec![MockResponse::json(format!(
+        r#"{{"value":"request {SENSITIVE_RESPONSE}"}}"#
+    ))])
+    .await;
+    let enabled_client = sensitive_client_for(&enabled_server, true);
+    let request_client = sensitive_client_for(&request_server, false);
+    let (capture, _guard) = capture_traces();
+
+    enabled_client
+        .account(test_creds())
+        .send_with_options(
+            JsonOperation::new("test.messages.list"),
+            RequestOptions::new().without_sensitive_tracing(),
+        )
+        .await
+        .unwrap();
+    enabled_client
+        .account(test_creds())
+        .send_with_options(
+            JsonOperation::new("test.messages.list"),
+            RequestOptions::new(),
+        )
+        .await
+        .unwrap();
+    request_client
+        .account(test_creds())
+        .send_with_options(
+            JsonOperation::new("test.messages.list"),
+            RequestOptions::new().sensitive_tracing(),
+        )
+        .await
+        .unwrap();
+
+    let requests = capture.sensitive_events_named("twilio2.sensitive.request");
+    let responses = capture.sensitive_events_named("twilio2.sensitive.response");
+    assert_eq!(requests.len(), 2, "{:#?}", capture.dump());
+    assert_eq!(responses.len(), 2, "{:#?}", capture.dump());
+    for request in &requests {
+        request.assert_level("DEBUG");
+        assert!(request.field("url").contains("/Messages.json"));
+        assert!(request.field("headers").contains("Basic QUMxMjM6dG9rZW4="));
+    }
+    for response in &responses {
+        response.assert_level("DEBUG");
+        assert!(response.field("body").contains(SENSITIVE_RESPONSE));
+    }
+    assert_redacted(
+        &capture,
+        &[
+            &enabled_server.base_url,
+            &request_server.base_url,
+            SENSITIVE_RESPONSE,
+            "token",
+        ],
+    );
+}
+
+#[cfg(all(feature = "async", feature = "sensitive-diagnostics"))]
+#[tokio::test(flavor = "current_thread")]
+async fn sensitive_tracing_and_callback_diagnostics_are_independent() {
+    let server = HttpsMockServer::start(vec![MockResponse::json(r#"{"ok":true}"#)]).await;
+    let callbacks = Arc::new(Mutex::new(0_u32));
+    let callback_count = Arc::clone(&callbacks);
+    let client = TwilioClient::from_config_with_http_builder(
+        TwilioClientConfig::new()
+            .base_urls(support::twilio_config(&server.base_url))
+            .with_sensitive_diagnostics(twilio2::SensitiveDiagnostics::new(move |_| {
+                *callback_count.lock().unwrap() += 1;
+            }))
+            .with_sensitive_tracing(),
+        support::test_http_client,
+    )
+    .unwrap();
+    let (capture, _guard) = capture_traces();
+
+    client
+        .account(test_creds())
+        .send_with_options(
+            JsonOperation::new("test.messages.list"),
+            RequestOptions::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(*callbacks.lock().unwrap(), 2);
+    assert_eq!(
+        capture
+            .sensitive_events_named("twilio2.sensitive.request")
+            .len(),
+        1
+    );
+    assert_eq!(
+        capture
+            .sensitive_events_named("twilio2.sensitive.response")
+            .len(),
+        1
+    );
+}
+
+#[cfg(all(feature = "async", feature = "sensitive-diagnostics"))]
+#[tokio::test(flavor = "current_thread")]
+async fn sensitive_tracing_captures_retry_responses_and_transport_errors() {
+    let server = HttpsMockServer::start(vec![
+        MockResponse::status_json(
+            503,
+            format!(r#"{{"message":"retry {SENSITIVE_RESPONSE}"}}"#),
+        ),
+        MockResponse::json(r#"{"ok":true}"#),
+    ])
+    .await;
+    let client = sensitive_client_for(&server, true);
+    let (capture, guard) = capture_traces();
+
+    client
+        .account(test_creds())
+        .send_with_options(
+            JsonOperation::new("test.messages.list"),
+            RequestOptions::new().retry(
+                RetryPolicy::none()
+                    .with_max_retries(1)
+                    .with_base_delay(Duration::from_millis(0))
+                    .with_jitter(false),
+            ),
+        )
+        .await
+        .unwrap();
+
+    let responses = capture.sensitive_events_named("twilio2.sensitive.response");
+    assert_eq!(responses.len(), 2, "{:#?}", capture.dump());
+    assert_eq!(responses[0].field("status"), "503");
+    assert_eq!(responses[1].field("status"), "200");
+    assert!(responses[0].field("body").contains(SENSITIVE_RESPONSE));
+    assert_redacted(&capture, &[&server.base_url, SENSITIVE_RESPONSE, "token"]);
+
+    drop(guard);
+    let base_url = unused_https_base_url().await;
+    let client = TwilioClient::from_config_with_http_builder(
+        TwilioClientConfig::new()
+            .base_urls(support::twilio_config(&base_url))
+            .with_sensitive_tracing(),
+        support::test_http_client,
+    )
+    .unwrap();
+    let (capture, _guard) = capture_traces();
+    let _ = client
+        .account(test_creds())
+        .send_with_options(
+            JsonOperation::new("test.messages.list"),
+            RequestOptions::new(),
+        )
+        .await;
+    let errors = capture.sensitive_events_named("twilio2.sensitive.transport_error");
+    assert_eq!(errors.len(), 1, "{:#?}", capture.dump());
+    errors[0].assert_level("WARN");
+    assert!(errors[0].field("url").contains(&base_url));
+    assert!(
+        errors[0]
+            .field("headers")
+            .contains("Basic QUMxMjM6dG9rZW4=")
+    );
+    assert_redacted(&capture, &[&base_url, "token", "AC123"]);
 }
 
 #[cfg(feature = "async")]
@@ -637,6 +864,74 @@ fn sync_success_emits_attempt_span_and_operation_success() {
     assert_success_capture(&capture, "0", "1");
     assert_single_span(&capture, None);
     assert_redacted(&capture, &[&server.base_url, "token", "AC123"]);
+}
+
+#[cfg(all(feature = "sync", feature = "sensitive-diagnostics"))]
+#[test]
+fn sync_sensitive_tracing_respects_client_and_request_overrides() {
+    let runtime = runtime();
+    let enabled_server = start_server(
+        &runtime,
+        vec![
+            MockResponse::json(format!(r#"{{"value":"disabled {SENSITIVE_RESPONSE}"}}"#)),
+            MockResponse::json(format!(r#"{{"value":"enabled {SENSITIVE_RESPONSE}"}}"#)),
+        ],
+    );
+    let request_server = start_server(
+        &runtime,
+        vec![MockResponse::json(format!(
+            r#"{{"value":"request {SENSITIVE_RESPONSE}"}}"#
+        ))],
+    );
+    let enabled_client = sensitive_blocking_client_for(&enabled_server, true);
+    let request_client = sensitive_blocking_client_for(&request_server, false);
+    let (capture, _guard) = capture_traces();
+
+    enabled_client
+        .account(test_creds())
+        .send_with_options(
+            JsonOperation::new("test.messages.list"),
+            RequestOptions::new().without_sensitive_tracing(),
+        )
+        .unwrap();
+    enabled_client
+        .account(test_creds())
+        .send_with_options(
+            JsonOperation::new("test.messages.list"),
+            RequestOptions::new(),
+        )
+        .unwrap();
+    request_client
+        .account(test_creds())
+        .send_with_options(
+            JsonOperation::new("test.messages.list"),
+            RequestOptions::new().sensitive_tracing(),
+        )
+        .unwrap();
+
+    let requests = capture.sensitive_events_named("twilio2.sensitive.request");
+    let responses = capture.sensitive_events_named("twilio2.sensitive.response");
+    assert_eq!(requests.len(), 2, "{:#?}", capture.dump());
+    assert_eq!(responses.len(), 2, "{:#?}", capture.dump());
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.field("headers").contains("Basic QUMxMjM6dG9rZW4="))
+    );
+    assert!(
+        responses
+            .iter()
+            .all(|response| response.field("body").contains(SENSITIVE_RESPONSE))
+    );
+    assert_redacted(
+        &capture,
+        &[
+            &enabled_server.base_url,
+            &request_server.base_url,
+            SENSITIVE_RESPONSE,
+            "token",
+        ],
+    );
 }
 
 #[cfg(feature = "sync")]

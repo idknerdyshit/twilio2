@@ -1,3 +1,20 @@
+#![cfg_attr(
+    feature = "sensitive-diagnostics",
+    doc = r#"
+# Sensitive protocol tracing
+
+The non-default `sensitive-diagnostics` feature exposes an explicit,
+intentionally dangerous tracing escape hatch. Call
+[`TwilioClientConfig::with_sensitive_tracing`] to emit complete request and
+response snapshots plus raw transport errors to the `twilio2::sensitive`
+tracing target, or use [`RequestOptions::sensitive_tracing`] for one request.
+The emitted values include credentials, URLs, headers, and bodies, so use
+this only with a local development subscriber. It is disabled by default,
+cannot be enabled through environment variables, and does not change the
+redaction applied to normal tracing, public errors, or [`Debug`](std::fmt::Debug).
+"#
+)]
+
 //! `twilio2` is a thin async and blocking client for Twilio Programmable Messaging.
 //!
 //! Account SID + Auth Token credentials, or Account SID + API Key SID/Secret

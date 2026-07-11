@@ -379,6 +379,10 @@ pub struct TwilioClientConfig {
     /// override is supplied. The sink itself is redacted from [`Debug`].
     #[cfg(feature = "sensitive-diagnostics")]
     pub sensitive_diagnostics: Option<SensitiveDiagnostics>,
+    /// Enable intentionally unredacted tracing for all requests made by
+    /// clients built from this config.
+    #[cfg(feature = "sensitive-diagnostics")]
+    pub sensitive_tracing: bool,
 }
 
 impl fmt::Debug for TwilioClientConfig {
@@ -393,6 +397,11 @@ impl fmt::Debug for TwilioClientConfig {
             "sensitive_diagnostics",
             &redacted_optional(self.sensitive_diagnostics.is_some()),
         );
+        #[cfg(feature = "sensitive-diagnostics")]
+        debug.field(
+            "sensitive_tracing",
+            &redacted_optional(self.sensitive_tracing),
+        );
         debug.finish()
     }
 }
@@ -405,6 +414,8 @@ impl Default for TwilioClientConfig {
             user_agent: DEFAULT_USER_AGENT.to_owned(),
             #[cfg(feature = "sensitive-diagnostics")]
             sensitive_diagnostics: None,
+            #[cfg(feature = "sensitive-diagnostics")]
+            sensitive_tracing: false,
         }
     }
 }
@@ -539,6 +550,29 @@ impl TwilioClientConfig {
     #[must_use]
     pub fn without_sensitive_diagnostics(mut self) -> Self {
         self.sensitive_diagnostics = None;
+        self
+    }
+
+    /// Enable intentionally unredacted tracing for all client requests.
+    ///
+    /// This is available only with the `sensitive-diagnostics` feature. It
+    /// emits complete request/response snapshots and raw transport errors to
+    /// the `twilio2::sensitive` tracing target, including credentials, URLs,
+    /// headers, and bodies. It is intended only for local protocol debugging;
+    /// do not enable it with production log sinks.
+    #[cfg(feature = "sensitive-diagnostics")]
+    #[must_use]
+    pub fn with_sensitive_tracing(mut self) -> Self {
+        self.sensitive_tracing = true;
+        self
+    }
+
+    /// Disable intentionally unredacted tracing for clients built from this
+    /// config.
+    #[cfg(feature = "sensitive-diagnostics")]
+    #[must_use]
+    pub fn without_sensitive_tracing(mut self) -> Self {
+        self.sensitive_tracing = false;
         self
     }
 }
@@ -773,6 +807,8 @@ pub struct RequestOptions {
     pub(crate) trace_label: Option<String>,
     #[cfg(feature = "sensitive-diagnostics")]
     pub(crate) sensitive_diagnostics: Option<SensitiveDiagnostics>,
+    #[cfg(feature = "sensitive-diagnostics")]
+    pub(crate) sensitive_tracing: Option<bool>,
     validation_error: Option<String>,
 }
 
@@ -957,6 +993,31 @@ impl RequestOptions {
         self
     }
 
+    /// Enable intentionally unredacted tracing for this request.
+    ///
+    /// This is available only with the `sensitive-diagnostics` feature. It
+    /// overrides the client default and emits complete request/response
+    /// snapshots and raw transport errors to the `twilio2::sensitive` tracing
+    /// target. The emitted values can contain credentials, URLs, headers, and
+    /// bodies; use only for local protocol debugging.
+    #[cfg(feature = "sensitive-diagnostics")]
+    #[must_use]
+    pub fn sensitive_tracing(mut self) -> Self {
+        self.sensitive_tracing = Some(true);
+        self
+    }
+
+    /// Disable intentionally unredacted tracing for this request.
+    ///
+    /// This overrides an enabled client default. The callback-based
+    /// [`SensitiveDiagnostics`] setting is independent.
+    #[cfg(feature = "sensitive-diagnostics")]
+    #[must_use]
+    pub fn without_sensitive_tracing(mut self) -> Self {
+        self.sensitive_tracing = Some(false);
+        self
+    }
+
     pub(crate) fn retry_or_default(&self) -> RetryPolicy {
         self.retry.unwrap_or_default()
     }
@@ -1053,6 +1114,11 @@ impl fmt::Debug for RequestOptions {
         debug.field(
             "sensitive_diagnostics",
             &redacted_optional(self.sensitive_diagnostics.is_some()),
+        );
+        #[cfg(feature = "sensitive-diagnostics")]
+        debug.field(
+            "sensitive_tracing",
+            &redacted_optional(self.sensitive_tracing.is_some()),
         );
         debug.finish()
     }
@@ -3357,16 +3423,35 @@ mod tests {
     #[cfg(feature = "sensitive-diagnostics")]
     #[test]
     fn sensitive_diagnostics_config_and_options_debug_are_redacted() {
-        let config =
-            TwilioClientConfig::new().with_sensitive_diagnostics(SensitiveDiagnostics::noop());
+        let config = TwilioClientConfig::new()
+            .with_sensitive_diagnostics(SensitiveDiagnostics::noop())
+            .with_sensitive_tracing();
         let rendered = format!("{config:?}");
         assert!(rendered.contains("sensitive_diagnostics"));
+        assert!(rendered.contains("sensitive_tracing"));
         assert!(rendered.contains("<redacted>"));
 
-        let options = RequestOptions::new().sensitive_diagnostics(SensitiveDiagnostics::noop());
+        let options = RequestOptions::new()
+            .sensitive_diagnostics(SensitiveDiagnostics::noop())
+            .sensitive_tracing();
         let rendered = format!("{options:?}");
         assert!(rendered.contains("sensitive_diagnostics"));
+        assert!(rendered.contains("sensitive_tracing"));
         assert!(rendered.contains("<redacted>"));
+
+        assert!(
+            !TwilioClientConfig::new()
+                .with_sensitive_tracing()
+                .without_sensitive_tracing()
+                .sensitive_tracing
+        );
+        assert_eq!(
+            RequestOptions::new()
+                .sensitive_tracing()
+                .without_sensitive_tracing()
+                .sensitive_tracing,
+            Some(false)
+        );
     }
 
     #[test]

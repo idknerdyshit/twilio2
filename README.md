@@ -68,6 +68,14 @@ twilio2 = { version = "0.4", default-features = false, features = ["async", "nat
 The `rustls-no-provider` feature is also available for applications that install
 their own rustls crypto provider.
 
+For explicitly unredacted local protocol tracing, also enable the
+non-default `sensitive-diagnostics` feature:
+
+```toml
+[dependencies]
+twilio2 = { version = "0.4", features = ["sensitive-diagnostics"] }
+```
+
 Cargo features are additive. You may enable both `async` and `sync`, and TLS
 features are not mutually exclusive. If default features are disabled, enable at
 least one of `async`/`sync` and at least one TLS backend.
@@ -244,6 +252,39 @@ credentials are redacted, sensitive key-value fields are replaced with
 `<redacted>`, and URLs are redacted. `Debug` output for returned structs also
 redacts resource identifiers, message bodies, phone numbers, sender IDs, links,
 and URLs to reduce accidental application log leaks.
+
+### Sensitive protocol tracing
+
+With the non-default `sensitive-diagnostics` feature, callers may explicitly
+emit complete request/response snapshots and raw transport errors through the
+`twilio2::sensitive` tracing target. This includes authorization credentials,
+URLs and query strings, headers, bodies, phone numbers, and message text. It is
+for local protocol debugging only; do not enable it with a production log sink.
+
+It is disabled by default and cannot be enabled from environment variables:
+
+```rust,no_run
+use twilio2::{RequestOptions, TwilioClient, TwilioClientConfig};
+
+# fn example() -> Result<(), twilio2::TwilioError> {
+let client = TwilioClient::from_config(
+    TwilioClientConfig::new().with_sensitive_tracing(),
+)?;
+
+// Enable it for just one request instead of the whole client.
+let options = RequestOptions::new().sensitive_tracing();
+
+// Suppress a client-wide setting for one request.
+let safe_options = RequestOptions::new().without_sensitive_tracing();
+# let _ = (client, options, safe_options);
+# Ok(())
+# }
+```
+
+Request-level settings override the client default. Sensitive tracing is
+independent from the existing `SensitiveDiagnostics` callback sink; either or
+both may be enabled. Normal `twilio2::trace` events, public errors, and `Debug`
+output remain redacted.
 
 ## License
 

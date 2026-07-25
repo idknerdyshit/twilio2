@@ -65,6 +65,10 @@ required-features = ["async"]
 name = "messaging_services"
 required-features = ["async"]
 
+[[example]]
+name = "bulk_messaging"
+required-features = ["async"]
+
 [lints.rust]
 unsafe_code = "deny"
 

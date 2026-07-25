@@ -257,6 +257,13 @@ For media downloads, `message(...).media().fetch(...)` calls Twilio's `.json`
 Media endpoint and `message(...).media().download(...)` calls the extensionless
 Media endpoint, returning `TwilioMediaContent { content_type, bytes }`.
 
+## Bulk Messaging
+
+Bulk Messaging v1 is available in matching async and blocking resource trees:
+`account.bulk_messaging().v1().messages()`. It supports typed bulk submissions,
+message and operation fetch/list calls, token pagination, and operation polling.
+Submissions use JSON and may target up to 10,000 recipients.
+
 ## Custom Base URLs
 
 Use `TwilioClientConfig` when tests or proxies need custom endpoints:
@@ -270,6 +277,7 @@ let config = TwilioClientConfig::new()
     .messaging_base_url("https://proxy.example.com/twilio-messaging")
     .pricing_base_url("https://proxy.example.com/twilio-pricing")
     .content_base_url("https://proxy.example.com/twilio-content")
+    .bulk_messaging_base_url("https://proxy.example.com/twilio-comms")
     .accounts_base_url("https://proxy.example.com/twilio-accounts/v1");
 let client = TwilioClient::from_config(config)?;
 # let _ = client;
@@ -292,6 +300,7 @@ The runnable examples use a local HTTPS mock server and never call Twilio:
 ```sh
 cargo run --example messages_builder
 cargo run --example messaging_services
+cargo run --example bulk_messaging
 ```
 
 ## Observability

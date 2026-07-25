@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- Add async and blocking Bulk Messaging v1 Messages and Operations support,
+  including typed JSON submissions, token pagination, operation polling, and
+  custom `comms.twilio.com` base URL configuration.
+
 ## [0.5.0] - 2026-07-25
 
 ### Added

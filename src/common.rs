@@ -43,6 +43,9 @@ pub const DEFAULT_CONTENT_BASE_URL: &str = "https://content.twilio.com";
 /// Default Twilio Accounts v1 API root, with no trailing slash.
 pub const DEFAULT_ACCOUNTS_BASE_URL: &str = "https://accounts.twilio.com/v1";
 
+/// Default Twilio Bulk Messaging API product root, with no trailing slash.
+pub const DEFAULT_BULK_MESSAGING_BASE_URL: &str = "https://comms.twilio.com";
+
 /// Default page size used by `*_all` paginator helpers.
 pub const DEFAULT_PAGE_SIZE: u32 = 50;
 
@@ -76,6 +79,9 @@ pub enum TwilioError {
     },
     #[error("malformed twilio response: {0}")]
     Decode(String),
+    /// A Bulk Messaging operation did not reach a terminal state by its deadline.
+    #[error("twilio bulk messaging operation timed out")]
+    OperationTimeout,
 }
 
 impl TwilioError {
@@ -86,7 +92,8 @@ impl TwilioError {
             Self::InvalidBaseUrl(_)
             | Self::InvalidRequest(_)
             | Self::InvalidResponseMetadata(_)
-            | Self::Decode(_) => false,
+            | Self::Decode(_)
+            | Self::OperationTimeout => false,
         }
     }
 
@@ -97,7 +104,8 @@ impl TwilioError {
             | Self::InvalidRequest(_)
             | Self::InvalidResponseMetadata(_)
             | Self::Transport(_)
-            | Self::Decode(_) => None,
+            | Self::Decode(_)
+            | Self::OperationTimeout => None,
         }
     }
 
@@ -109,6 +117,7 @@ impl TwilioError {
             Self::Transport(_) => "transport",
             Self::Api { .. } => "api",
             Self::Decode(_) => "decode",
+            Self::OperationTimeout => "operation_timeout",
         }
     }
 }
@@ -237,6 +246,7 @@ pub struct TwilioConfig {
     pricing: String,
     content: String,
     accounts: String,
+    bulk_messaging: String,
 }
 
 impl fmt::Debug for TwilioConfig {
@@ -247,6 +257,10 @@ impl fmt::Debug for TwilioConfig {
             .field("pricing_base_url", &redacted_str(&self.pricing))
             .field("content_base_url", &redacted_str(&self.content))
             .field("accounts_base_url", &redacted_str(&self.accounts))
+            .field(
+                "bulk_messaging_base_url",
+                &redacted_str(&self.bulk_messaging),
+            )
             .finish()
     }
 }
@@ -259,6 +273,7 @@ impl Default for TwilioConfig {
             pricing: DEFAULT_PRICING_BASE_URL.to_owned(),
             content: DEFAULT_CONTENT_BASE_URL.to_owned(),
             accounts: DEFAULT_ACCOUNTS_BASE_URL.to_owned(),
+            bulk_messaging: DEFAULT_BULK_MESSAGING_BASE_URL.to_owned(),
         }
     }
 }
@@ -290,6 +305,7 @@ impl TwilioConfig {
             env_var("TWILIO_PRICING_BASE_URL")?,
             env_var("TWILIO_ACCOUNTS_BASE_URL")?,
             env_var("TWILIO_CONTENT_BASE_URL")?,
+            env_var("TWILIO_BULK_MESSAGING_BASE_URL")?,
         )
     }
 
@@ -299,6 +315,7 @@ impl TwilioConfig {
         pricing_base_url: Option<String>,
         accounts_base_url: Option<String>,
         content_base_url: Option<String>,
+        bulk_messaging_base_url: Option<String>,
     ) -> Result<Self, TwilioError> {
         let mut config = Self::new();
         if let Some(rest_base_url) = non_empty_env(rest_base_url) {
@@ -323,6 +340,11 @@ impl TwilioConfig {
             normalize_product_root_base_url(&content_base_url)
                 .map_err(TwilioError::InvalidBaseUrl)?;
             config = config.content_base_url(content_base_url);
+        }
+        if let Some(bulk_messaging_base_url) = non_empty_env(bulk_messaging_base_url) {
+            normalize_product_root_base_url(&bulk_messaging_base_url)
+                .map_err(TwilioError::InvalidBaseUrl)?;
+            config = config.bulk_messaging_base_url(bulk_messaging_base_url);
         }
         Ok(config)
     }
@@ -362,6 +384,13 @@ impl TwilioConfig {
         self
     }
 
+    /// Set the Twilio Bulk Messaging API product root.
+    #[must_use]
+    pub fn bulk_messaging_base_url(mut self, value: impl Into<String>) -> Self {
+        self.bulk_messaging = value.into();
+        self
+    }
+
     /// Return the normalized public REST API base URL string.
     #[must_use]
     pub fn rest_base_url_ref(&self) -> &str {
@@ -390,6 +419,12 @@ impl TwilioConfig {
     #[must_use]
     pub fn accounts_base_url_ref(&self) -> &str {
         &self.accounts
+    }
+
+    /// Return the normalized public Bulk Messaging API base URL string.
+    #[must_use]
+    pub fn bulk_messaging_base_url_ref(&self) -> &str {
+        &self.bulk_messaging
     }
 }
 
@@ -479,9 +514,12 @@ impl TwilioClientConfig {
             env_var("TWILIO_CONTENT_BASE_URL")?,
             env_var("TWILIO_TIMEOUT_SECS")?,
             env_var("TWILIO_USER_AGENT")?,
+            env_var("TWILIO_BULK_MESSAGING_BASE_URL")?,
         )
     }
 
+    // Kept as scalar inputs so environment reads remain independently testable.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_env_values(
         rest_base_url: Option<String>,
         messaging_base_url: Option<String>,
@@ -490,6 +528,7 @@ impl TwilioClientConfig {
         content_base_url: Option<String>,
         timeout_secs: Option<String>,
         user_agent: Option<String>,
+        bulk_messaging_base_url: Option<String>,
     ) -> Result<Self, TwilioError> {
         let base_urls = TwilioConfig::from_env_values(
             rest_base_url,
@@ -497,6 +536,7 @@ impl TwilioClientConfig {
             pricing_base_url,
             accounts_base_url,
             content_base_url,
+            bulk_messaging_base_url,
         )?;
         let mut config = Self::new().base_urls(base_urls);
         if let Some(timeout_secs) = non_empty_env(timeout_secs) {
@@ -557,6 +597,13 @@ impl TwilioClientConfig {
     #[must_use]
     pub fn accounts_base_url(mut self, value: impl Into<String>) -> Self {
         self.base_urls = self.base_urls.accounts_base_url(value);
+        self
+    }
+
+    /// Set the Twilio Bulk Messaging API product root.
+    #[must_use]
+    pub fn bulk_messaging_base_url(mut self, value: impl Into<String>) -> Self {
+        self.base_urls = self.base_urls.bulk_messaging_base_url(value);
         self
     }
 
@@ -640,6 +687,7 @@ pub(crate) struct ParsedConfig {
     pub(crate) pricing: Url,
     pub(crate) content: Url,
     pub(crate) accounts: Url,
+    pub(crate) bulk_messaging: Url,
 }
 
 impl ParsedConfig {
@@ -653,6 +701,8 @@ impl ParsedConfig {
             content: normalize_product_root_base_url(&config.content)
                 .map_err(TwilioError::InvalidBaseUrl)?,
             accounts: normalize_base_url(&config.accounts).map_err(TwilioError::InvalidBaseUrl)?,
+            bulk_messaging: normalize_product_root_base_url(&config.bulk_messaging)
+                .map_err(TwilioError::InvalidBaseUrl)?,
         })
     }
 
@@ -663,6 +713,7 @@ impl ParsedConfig {
             pricing: public_base_url(&self.pricing),
             content: public_base_url(&self.content),
             accounts: public_base_url(&self.accounts),
+            bulk_messaging: public_base_url(&self.bulk_messaging),
         }
     }
 }
@@ -753,6 +804,8 @@ pub enum ApiFamily {
     ContentV2,
     /// Twilio Accounts v1 API rooted at [`DEFAULT_ACCOUNTS_BASE_URL`].
     Accounts,
+    /// Twilio Bulk Messaging v1 API under [`DEFAULT_BULK_MESSAGING_BASE_URL`].
+    BulkMessagingV1,
 }
 
 /// Retry policy for request-scoped safe-method retries.
@@ -851,6 +904,7 @@ pub struct RequestOptions {
     pub(crate) pricing_base_url: Option<String>,
     pub(crate) content_base_url: Option<String>,
     pub(crate) accounts_base_url: Option<String>,
+    pub(crate) bulk_messaging_base_url: Option<String>,
     pub(crate) timeout: Option<Duration>,
     pub(crate) retry: Option<RetryPolicy>,
     pub(crate) headers: Vec<(String, String)>,
@@ -966,6 +1020,28 @@ impl RequestOptions {
         let value = value.as_ref();
         normalize_base_url(value).map_err(TwilioError::InvalidBaseUrl)?;
         self.accounts_base_url = Some(value.to_owned());
+        Ok(self)
+    }
+
+    /// Override the Bulk Messaging API product root for this request.
+    #[must_use]
+    pub fn bulk_messaging_base_url(mut self, value: impl Into<String>) -> Self {
+        self.bulk_messaging_base_url = Some(value.into());
+        self
+    }
+
+    /// Override and immediately validate the Bulk Messaging API product root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError::InvalidBaseUrl`] when the URL is invalid.
+    pub fn try_bulk_messaging_base_url(
+        mut self,
+        value: impl AsRef<str>,
+    ) -> Result<Self, TwilioError> {
+        let value = value.as_ref();
+        normalize_product_root_base_url(value).map_err(TwilioError::InvalidBaseUrl)?;
+        self.bulk_messaging_base_url = Some(value.to_owned());
         Ok(self)
     }
 
@@ -1131,6 +1207,12 @@ impl RequestOptions {
                 .map(normalize_base_url)
                 .transpose()
                 .map_err(TwilioError::InvalidBaseUrl),
+            ApiFamily::BulkMessagingV1 => self
+                .bulk_messaging_base_url
+                .as_deref()
+                .map(normalize_product_root_base_url)
+                .transpose()
+                .map_err(TwilioError::InvalidBaseUrl),
         }
     }
 }
@@ -1174,6 +1256,14 @@ impl fmt::Debug for RequestOptions {
             .field(
                 "accounts_base_url",
                 &if self.accounts_base_url.is_some() {
+                    Some(REDACTED)
+                } else {
+                    None
+                },
+            )
+            .field(
+                "bulk_messaging_base_url",
+                &if self.bulk_messaging_base_url.is_some() {
                     Some(REDACTED)
                 } else {
                     None
@@ -1831,11 +1921,21 @@ fn twilio_api_error_code(body: &[u8]) -> Option<u32> {
     #[derive(Deserialize)]
     struct WireApiError {
         code: Option<u32>,
+        #[serde(default)]
+        errors: Vec<WireNestedApiError>,
+    }
+    #[derive(Deserialize)]
+    struct WireNestedApiError {
+        code: Option<u32>,
     }
 
     serde_json::from_slice::<WireApiError>(body)
         .ok()
-        .and_then(|error| error.code)
+        .and_then(|error| {
+            error
+                .code
+                .or_else(|| error.errors.first().and_then(|nested| nested.code))
+        })
 }
 
 pub(crate) fn api_error_from_text(
@@ -3531,6 +3631,7 @@ mod tests {
             Some("https://proxy.example.test/pricing".to_owned()),
             Some("https://proxy.example.test/accounts/v1".to_owned()),
             Some("https://proxy.example.test/content".to_owned()),
+            Some("https://proxy.example.test/comms".to_owned()),
         )
         .expect("valid env base URLs should parse");
         assert_eq!(base.rest_base_url_ref(), "https://proxy.example.test/rest");
@@ -3555,6 +3656,7 @@ mod tests {
             Some("https://proxy.example.test/content".to_owned()),
             Some("9".to_owned()),
             Some("test-agent/2.0".to_owned()),
+            Some("https://proxy.example.test/comms".to_owned()),
         )
         .expect("valid client env config should parse");
         assert_eq!(config.timeout, Duration::from_secs(9));
@@ -3570,6 +3672,7 @@ mod tests {
             None,
             None,
             Some("0".to_owned()),
+            None,
             None,
         )
         .expect_err("zero timeout should fail");

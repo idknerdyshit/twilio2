@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::VecDeque;
 use std::io;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -30,6 +32,14 @@ impl MockResponse {
     pub(super) fn created_json(body: impl Into<String>) -> Self {
         Self {
             status: 201,
+            body: body.into().into_bytes(),
+            content_type: "application/json".to_owned(),
+        }
+    }
+
+    pub(super) fn accepted_json(body: impl Into<String>) -> Self {
+        Self {
+            status: 202,
             body: body.into().into_bytes(),
             content_type: "application/json".to_owned(),
         }
@@ -115,6 +125,7 @@ pub(super) fn client_for(server: &HttpsMockServer) -> ExampleResult<TwilioClient
             TwilioConfig::new()
                 .rest_base_url(server.base_url())
                 .messaging_base_url(server.base_url())
+                .bulk_messaging_base_url(server.base_url())
                 .accounts_base_url(format!("{}/v1", server.base_url())),
         ),
         |builder| builder.danger_accept_invalid_certs(true).no_proxy(),

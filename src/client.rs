@@ -4,6 +4,7 @@ use std::time::Instant;
 use tracing::Instrument as _;
 use url::Url;
 
+use crate::bulk_messaging::BulkMessagingResource;
 use crate::common::{
     ApiResponse, AttemptTrace, Operation, OperationTrace, ParsedConfig, RawResponse, RequestBody,
     RequestOptions, RequestSpec, RequestTarget, ResponseMeta, RetryPolicy, TwilioAuth,
@@ -419,12 +420,16 @@ impl TwilioClient {
                             crate::common::ApiFamily::ContentV1
                             | crate::common::ApiFamily::ContentV2 => self.config.content.clone(),
                             crate::common::ApiFamily::Accounts => self.config.accounts.clone(),
+                            crate::common::ApiFamily::BulkMessagingV1 => {
+                                self.config.bulk_messaging.clone()
+                            }
                         });
                 let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
                 match spec.family {
                     crate::common::ApiFamily::MessagingV1
                     | crate::common::ApiFamily::PricingV1
-                    | crate::common::ApiFamily::ContentV1 => {
+                    | crate::common::ApiFamily::ContentV1
+                    | crate::common::ApiFamily::BulkMessagingV1 => {
                         crate::common::endpoint_url_from_versioned_base(&base, "v1", &refs)?
                     }
                     crate::common::ApiFamily::MessagingV2
@@ -476,6 +481,7 @@ impl TwilioClient {
                 || options.pricing_base_url.is_some()
                 || options.content_base_url.is_some()
                 || options.accounts_base_url.is_some()
+                || options.bulk_messaging_base_url.is_some()
                 || !options.query.is_empty())
         {
             return Err(RawAttemptError {
@@ -775,6 +781,11 @@ pub struct TwilioAccount<'a> {
 }
 
 impl<'a> TwilioAccount<'a> {
+    /// Twilio Bulk Messaging product resources.
+    #[must_use]
+    pub fn bulk_messaging(self) -> BulkMessagingResource<'a> {
+        BulkMessagingResource::new(self)
+    }
     /// Account-level Messages collection.
     #[must_use]
     pub fn messages(self) -> MessagesResource<'a> {

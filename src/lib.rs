@@ -240,6 +240,7 @@ compile_error!(
 mod a2p;
 #[cfg(feature = "sync")]
 mod blocking_client;
+mod bulk_messaging;
 mod channel_senders;
 #[cfg(feature = "async")]
 mod client;
@@ -282,6 +283,7 @@ pub use a2p::{
 };
 #[cfg(feature = "sync")]
 pub use blocking_client::{BlockingTwilioAccount, BlockingTwilioClient};
+pub use bulk_messaging::*;
 #[cfg(feature = "sync")]
 pub use channel_senders::{
     BlockingMessagingV2ChannelSenderResource, BlockingMessagingV2ChannelSendersResource,
@@ -307,11 +309,11 @@ pub use common::BlockingTwilioPaginator;
 #[cfg(feature = "async")]
 pub use common::TwilioPaginator;
 pub use common::{
-    ApiFamily, ApiResponse, DEFAULT_ACCOUNTS_BASE_URL, DEFAULT_CONTENT_BASE_URL,
-    DEFAULT_MESSAGING_BASE_URL, DEFAULT_PAGE_SIZE, DEFAULT_PRICING_BASE_URL, DEFAULT_REST_BASE_URL,
-    Operation, RawResponse, RequestOptions, RequestSpec, ResponseMeta, RetryPolicy, TwilioAuth,
-    TwilioClientConfig, TwilioConfig, TwilioError, TwilioMediaContent, V1PageMeta,
-    decode_json_response,
+    ApiFamily, ApiResponse, DEFAULT_ACCOUNTS_BASE_URL, DEFAULT_BULK_MESSAGING_BASE_URL,
+    DEFAULT_CONTENT_BASE_URL, DEFAULT_MESSAGING_BASE_URL, DEFAULT_PAGE_SIZE,
+    DEFAULT_PRICING_BASE_URL, DEFAULT_REST_BASE_URL, Operation, RawResponse, RequestOptions,
+    RequestSpec, ResponseMeta, RetryPolicy, TwilioAuth, TwilioClientConfig, TwilioConfig,
+    TwilioError, TwilioMediaContent, V1PageMeta, decode_json_response,
 };
 pub use content::*;
 #[cfg(feature = "sync")]

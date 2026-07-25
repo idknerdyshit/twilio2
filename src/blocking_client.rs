@@ -7,6 +7,7 @@ use http::HeaderMap;
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use url::Url;
 
+use crate::bulk_messaging::BlockingBulkMessagingResource;
 use crate::common::{
     ApiFamily, ApiResponse, AttemptTrace, Operation, OperationTrace, ParsedConfig, RawResponse,
     RequestBody, RequestOptions, RequestSpec, RequestTarget, ResponseMeta, RetryPolicy, TwilioAuth,
@@ -449,10 +450,14 @@ impl BlockingTwilioClient {
                                 self.config.content.clone()
                             }
                             ApiFamily::Accounts => self.config.accounts.clone(),
+                            ApiFamily::BulkMessagingV1 => self.config.bulk_messaging.clone(),
                         });
                 let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
                 match spec.family {
-                    ApiFamily::MessagingV1 | ApiFamily::PricingV1 | ApiFamily::ContentV1 => {
+                    ApiFamily::MessagingV1
+                    | ApiFamily::PricingV1
+                    | ApiFamily::ContentV1
+                    | ApiFamily::BulkMessagingV1 => {
                         crate::common::endpoint_url_from_versioned_base(&base, "v1", &refs)?
                     }
                     ApiFamily::MessagingV2 | ApiFamily::PricingV2 | ApiFamily::ContentV2 => {
@@ -500,6 +505,7 @@ impl BlockingTwilioClient {
                 || options.pricing_base_url.is_some()
                 || options.content_base_url.is_some()
                 || options.accounts_base_url.is_some()
+                || options.bulk_messaging_base_url.is_some()
                 || !options.query.is_empty())
         {
             return Err(BlockingRawAttemptError {
@@ -834,6 +840,11 @@ pub struct BlockingTwilioAccount<'a> {
 }
 
 impl<'a> BlockingTwilioAccount<'a> {
+    /// Twilio Bulk Messaging product resources.
+    #[must_use]
+    pub fn bulk_messaging(self) -> BlockingBulkMessagingResource<'a> {
+        BlockingBulkMessagingResource::new(self)
+    }
     /// Account-level Messages collection.
     #[must_use]
     pub fn messages(self) -> BlockingMessagesResource<'a> {

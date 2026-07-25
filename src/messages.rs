@@ -411,21 +411,20 @@ impl<'a> CreateMessageRequest<'a> {
         // These are Twilio API contract checks, not Rust/framework safeguards.
         // Keeping them local gives callers deterministic InvalidRequest errors
         // for simple documented hard limits before any network request is made.
-        if let Some(body) = self.body {
-            if body.chars().count() > MESSAGE_BODY_MAX_CHARS {
-                return Err(TwilioError::InvalidRequest(format!(
-                    "Body must be at most {MESSAGE_BODY_MAX_CHARS} characters"
-                )));
-            }
+        if let Some(body) = self.body
+            && body.chars().count() > MESSAGE_BODY_MAX_CHARS
+        {
+            return Err(TwilioError::InvalidRequest(format!(
+                "Body must be at most {MESSAGE_BODY_MAX_CHARS} characters"
+            )));
         }
-        if let Some(validity_period) = self.validity_period {
-            if !(MESSAGE_VALIDITY_PERIOD_MIN_SECONDS..=MESSAGE_VALIDITY_PERIOD_MAX_SECONDS)
+        if let Some(validity_period) = self.validity_period
+            && !(MESSAGE_VALIDITY_PERIOD_MIN_SECONDS..=MESSAGE_VALIDITY_PERIOD_MAX_SECONDS)
                 .contains(&validity_period)
-            {
-                return Err(TwilioError::InvalidRequest(format!(
-                    "ValidityPeriod must be in {MESSAGE_VALIDITY_PERIOD_MIN_SECONDS}..={MESSAGE_VALIDITY_PERIOD_MAX_SECONDS}"
-                )));
-            }
+        {
+            return Err(TwilioError::InvalidRequest(format!(
+                "ValidityPeriod must be in {MESSAGE_VALIDITY_PERIOD_MIN_SECONDS}..={MESSAGE_VALIDITY_PERIOD_MAX_SECONDS}"
+            )));
         }
         if self.shorten_urls == Some(true) && !has_non_empty(self.messaging_service_sid) {
             return Err(TwilioError::InvalidRequest(
@@ -437,12 +436,12 @@ impl<'a> CreateMessageRequest<'a> {
                 "ContentVariables requires ContentSid".to_owned(),
             ));
         }
-        if let Some(MessageIntent::Custom(value)) = self.message_intent {
-            if value.trim().is_empty() {
-                return Err(TwilioError::InvalidRequest(
-                    "MessageIntent must not be empty".to_owned(),
-                ));
-            }
+        if let Some(MessageIntent::Custom(value)) = self.message_intent
+            && value.trim().is_empty()
+        {
+            return Err(TwilioError::InvalidRequest(
+                "MessageIntent must not be empty".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -675,12 +674,12 @@ impl<'a> UpdateMessageRequest<'a> {
         }
         // Twilio only accepts Body updates for redaction, represented by an
         // exactly empty string.
-        if let Some(body) = self.body {
-            if !body.is_empty() {
-                return Err(TwilioError::InvalidRequest(
-                    "Body must be empty when updating a Message".to_owned(),
-                ));
-            }
+        if let Some(body) = self.body
+            && !body.is_empty()
+        {
+            return Err(TwilioError::InvalidRequest(
+                "Body must be empty when updating a Message".to_owned(),
+            ));
         }
         Ok(())
     }

@@ -7,11 +7,14 @@
 //! explicit sensitive-tracing opt-in can additionally emit these snapshots to
 //! a dedicated tracing target without redaction.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use http::HeaderMap;
+use serde::Deserialize;
+use serde_json::Value;
 
 use crate::common::{REDACTED, RawResponse};
 
@@ -410,6 +413,41 @@ pub struct SensitiveResponseSnapshot {
     pub body: Bytes,
 }
 
+/// Parsed fields from a Twilio API error response.
+///
+/// This type is available only with the `sensitive-diagnostics` feature.
+/// String and additional-field values can contain credentials, URLs, phone
+/// numbers, message content, or other sensitive data.
+#[derive(Clone, Deserialize)]
+pub struct SensitiveTwilioApiError {
+    /// Twilio's numeric error code, when present.
+    pub code: Option<u32>,
+    /// Twilio's server-provided error message, when present.
+    pub message: Option<String>,
+    /// Twilio's server-provided documentation URL, when present.
+    pub more_info: Option<String>,
+    /// Status embedded in the Twilio response body, when present.
+    pub status: Option<u16>,
+    /// Additional server-provided error fields.
+    #[serde(flatten)]
+    pub additional_fields: BTreeMap<String, Value>,
+}
+
+impl fmt::Debug for SensitiveTwilioApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SensitiveTwilioApiError")
+            .field("code", &self.code)
+            .field("message", &redacted_optional(self.message.is_some()))
+            .field("more_info", &redacted_optional(self.more_info.is_some()))
+            .field("status", &self.status)
+            .field(
+                "additional_fields",
+                &format_args!("[{REDACTED}; {}]", self.additional_fields.len()),
+            )
+            .finish()
+    }
+}
+
 impl SensitiveResponseSnapshot {
     pub(crate) fn from_raw(request: &SensitiveRequestSnapshot, raw: &RawResponse) -> Self {
         Self {
@@ -423,6 +461,18 @@ impl SensitiveResponseSnapshot {
             headers: raw.headers.clone(),
             body: Bytes::copy_from_slice(&raw.body),
         }
+    }
+
+    /// Parse this non-success response as Twilio's structured API error shape.
+    ///
+    /// Returns `None` for successful responses, malformed JSON, non-object
+    /// bodies, or canonical fields with incompatible types.
+    #[must_use]
+    pub fn twilio_api_error(&self) -> Option<SensitiveTwilioApiError> {
+        if (200..300).contains(&self.status) {
+            return None;
+        }
+        serde_json::from_slice(&self.body).ok()
     }
 }
 

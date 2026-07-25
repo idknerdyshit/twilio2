@@ -30,7 +30,8 @@ redaction applied to normal tracing, public errors, or [`Debug`](std::fmt::Debug
 //! Deactivations, Toll-free Verifications, Accounts v1 Messaging feature APIs,
 //! standalone Messaging v2 Channel Senders, Messaging v2/v3 typing indicators,
 //! Pricing v1/v2 Messaging, Phone Numbers, Voice, and Trunking resources, and
-//! Content v1 template lifecycle and `WhatsApp` approval resources. Separate
+//! Content v1 template lifecycle, legacy mappings and `WhatsApp` approval resources,
+//! plus Content v2 template search. Separate
 //! Twilio products such as `Conversations`, `Verify`, and the standalone
 //! `WhatsApp` Business Platform remain outside the crate.
 //!
@@ -312,22 +313,7 @@ pub use common::{
     TwilioClientConfig, TwilioConfig, TwilioError, TwilioMediaContent, V1PageMeta,
     decode_json_response,
 };
-#[cfg(feature = "sync")]
-pub use content::{
-    BlockingContentApprovalRequestsResource, BlockingContentResource,
-    BlockingContentTemplateResource, BlockingContentV1Resource, BlockingContentsResource,
-};
-pub use content::{
-    ContentAction, ContentCard, ContentMedia, ContentQuickReply, ContentText, ContentTypes,
-    CreateContentRequest, DeleteContentRequest, ListContentRequest, SubmitWhatsAppApprovalRequest,
-    TwilioContent, TwilioContentApprovalStatus, TwilioContentPage, TwilioContentTypes,
-    TwilioWhatsAppApprovalSubmission, UpdateContentRequest, WhatsAppTemplateCategory,
-};
-#[cfg(feature = "async")]
-pub use content::{
-    ContentApprovalRequestsResource, ContentResource, ContentTemplateResource, ContentV1Resource,
-    ContentsResource,
-};
+pub use content::*;
 #[cfg(feature = "sync")]
 pub use deactivations::BlockingDeactivationsResource;
 #[cfg(feature = "async")]
@@ -337,7 +323,7 @@ pub use deactivations::{FetchDeactivationsRequest, TwilioDeactivation};
 pub use diagnostics::{
     SensitiveDiagnosticEvent, SensitiveDiagnosticSink, SensitiveDiagnostics,
     SensitiveDiagnosticsBuilder, SensitiveRequestSnapshot, SensitiveResponseSnapshot,
-    SensitiveTransportErrorSnapshot, SensitiveTransportErrorStage,
+    SensitiveTransportErrorSnapshot, SensitiveTransportErrorStage, SensitiveTwilioApiError,
 };
 #[cfg(feature = "sync")]
 pub use link_shortening::{

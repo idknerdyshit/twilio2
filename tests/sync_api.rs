@@ -265,7 +265,7 @@ fn pricing_continuation_api_errors_redact_page_url() {
         vec![MockResponse::status_json(
             400,
             format!(
-                r#"{{"message":"bad cursor __BASE_URL__/v1/Messaging/Countries?PageSize=2&Page=1&PageToken={page_token}"}}"#
+                r#"{{"code":20003,"message":"bad cursor __BASE_URL__/v1/Messaging/Countries?PageSize=2&Page=1&PageToken={page_token}"}}"#
             ),
         )],
     );
@@ -284,8 +284,9 @@ fn pricing_continuation_api_errors_redact_page_url() {
         .unwrap_err();
 
     match err {
-        TwilioError::Api { status, body } => {
+        TwilioError::Api { status, code, body } => {
             assert_eq!(status, 400);
+            assert_eq!(code, Some(20003));
             assert!(
                 !body.contains(&next_page_url),
                 "API error body leaked cursor: {body}"
@@ -1148,7 +1149,7 @@ fn large_api_errors_are_truncated_redacted_and_safe_get_retries() {
         .send(MessagesValueOperation)
         .unwrap_err();
     match err {
-        TwilioError::Api { status, body } => {
+        TwilioError::Api { status, body, .. } => {
             assert_eq!(status, 400);
             assert!(body.starts_with("<redacted response body; "));
             assert!(!body.contains("token"));

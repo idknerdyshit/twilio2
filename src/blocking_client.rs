@@ -12,7 +12,7 @@ use crate::common::{
     RequestBody, RequestOptions, RequestSpec, RequestTarget, ResponseMeta, RetryPolicy, TwilioAuth,
     TwilioClientConfig, TwilioConfig, TwilioError, api_error_from_body,
     api_error_from_read_error_message, attempt_error, attempt_response, attempt_span,
-    content_v1_page_url_from_base, decode_json_response, endpoint_url_from_base,
+    content_page_url_from_base, decode_json_response, endpoint_url_from_base,
     legacy_page_uri_url_from_base, owned_sensitive_values, pricing_page_url_from_base,
     read_limited_reader_body, transport_error_from_message, v1_page_url_from_base,
     validate_request_spec_headers,
@@ -378,12 +378,20 @@ impl BlockingTwilioClient {
         endpoint_url_from_base(&self.config.accounts, segments)
     }
 
-    pub(crate) fn content_endpoint(&self, segments: &[&str]) -> Result<Url, TwilioError> {
-        crate::common::endpoint_url_from_versioned_base(&self.config.content, "v1", segments)
+    pub(crate) fn content_endpoint(
+        &self,
+        version: &'static str,
+        segments: &[&str],
+    ) -> Result<Url, TwilioError> {
+        crate::common::endpoint_url_from_versioned_base(&self.config.content, version, segments)
     }
 
-    pub(crate) fn content_page_url(&self, page_url: &str) -> Result<Url, TwilioError> {
-        content_v1_page_url_from_base(&self.config.content, page_url)
+    pub(crate) fn content_page_url(
+        &self,
+        page_url: &str,
+        resource: crate::common::ContentPageResource,
+    ) -> Result<Url, TwilioError> {
+        content_page_url_from_base(&self.config.content, page_url, resource)
     }
 
     pub(crate) fn legacy_page_url(
@@ -437,28 +445,21 @@ impl BlockingTwilioClient {
                             ApiFamily::PricingV1 | ApiFamily::PricingV2 => {
                                 self.config.pricing.clone()
                             }
-                            ApiFamily::ContentV1 => self.config.content.clone(),
+                            ApiFamily::ContentV1 | ApiFamily::ContentV2 => {
+                                self.config.content.clone()
+                            }
                             ApiFamily::Accounts => self.config.accounts.clone(),
                         });
                 let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
                 match spec.family {
-                    ApiFamily::MessagingV1 => {
+                    ApiFamily::MessagingV1 | ApiFamily::PricingV1 | ApiFamily::ContentV1 => {
                         crate::common::endpoint_url_from_versioned_base(&base, "v1", &refs)?
                     }
-                    ApiFamily::MessagingV2 => {
+                    ApiFamily::MessagingV2 | ApiFamily::PricingV2 | ApiFamily::ContentV2 => {
                         crate::common::endpoint_url_from_versioned_base(&base, "v2", &refs)?
                     }
                     ApiFamily::MessagingV3 => {
                         crate::common::endpoint_url_from_versioned_base(&base, "v3", &refs)?
-                    }
-                    ApiFamily::PricingV1 => {
-                        crate::common::endpoint_url_from_versioned_base(&base, "v1", &refs)?
-                    }
-                    ApiFamily::PricingV2 => {
-                        crate::common::endpoint_url_from_versioned_base(&base, "v2", &refs)?
-                    }
-                    ApiFamily::ContentV1 => {
-                        crate::common::endpoint_url_from_versioned_base(&base, "v1", &refs)?
                     }
                     ApiFamily::Rest | ApiFamily::Accounts => endpoint_url_from_base(&base, &refs)?,
                 }
@@ -644,7 +645,7 @@ impl BlockingTwilioClient {
         if capture_sensitive_response {
             return match response.body_mut().read_to_vec() {
                 Ok(body) => ApiErrorRead {
-                    error: api_error_from_body(status, &body, sensitive_values),
+                    error: api_error_from_body(status, &body, true, sensitive_values),
                     raw_response: Some(RawResponse::new(status, headers, body)),
                     transport_error: None,
                 },
@@ -679,7 +680,7 @@ impl BlockingTwilioClient {
             .complete
             .then(|| RawResponse::new(status, headers, limited.body.clone()));
         ApiErrorRead {
-            error: api_error_from_body(status, &limited.body, sensitive_values),
+            error: api_error_from_body(status, &limited.body, limited.complete, sensitive_values),
             raw_response,
             transport_error: None,
         }

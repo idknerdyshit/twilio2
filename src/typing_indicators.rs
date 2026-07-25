@@ -153,11 +153,8 @@ impl<'a> CreateMessagingV3TypingIndicatorRequest<'a> {
             MessagingV3TypingIndicatorKind::WhatsApp { message_id, .. } => {
                 validate_required("messageId", message_id)
             }
-            MessagingV3TypingIndicatorKind::Apple { from, to, .. } => {
-                validate_required("from", from)?;
-                validate_required("to", to)
-            }
-            MessagingV3TypingIndicatorKind::Rcs { from, to, .. } => {
+            MessagingV3TypingIndicatorKind::Apple { from, to, .. }
+            | MessagingV3TypingIndicatorKind::Rcs { from, to, .. } => {
                 validate_required("from", from)?;
                 validate_required("to", to)
             }

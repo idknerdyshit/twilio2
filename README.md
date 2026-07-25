@@ -25,7 +25,7 @@ It covers:
 - Messaging v2 Channel Senders and WhatsApp typing indicators, plus Messaging
   v3 Apple and RCS typing indicators
 - Accounts v1 Messaging GeoPermissions and Messaging Service use-case helpers
-- Content v1 templates: create, fetch, list, update, delete, and WhatsApp approval
+- Content v1 templates: lifecycle, approvals, and legacy mappings; Content v2 search
 
 The client stores only shared transport state and parsed base URLs. Account SID
 and Auth Token values, or Account SID plus API Key SID/Secret values, are passed
@@ -48,9 +48,9 @@ Content v1 pagination follows the same rule for `content_base_url`.
 
 ```rust,no_run
 use twilio2::{
-    ContentText, ContentTypes, CreateContentRequest, CreateMessageRequest,
-    SubmitWhatsAppApprovalRequest, TwilioAuth, TwilioClient,
-    WhatsAppTemplateCategory,
+    ContentCard, ContentCardAction, ContentSearchRequest, ContentText, ContentTypes,
+    CreateContentRequest, CreateMessageRequest, ListContentRequest,
+    SubmitWhatsAppApprovalRequest, TwilioAuth, TwilioClient, WhatsAppTemplateCategory,
 };
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -59,10 +59,18 @@ let auth = TwilioAuth::auth_token("AC...", "token");
 let account = client.account(&auth);
 let template = account.content().v1().contents().create(
     CreateContentRequest::new(
-        "order_update",
         "en",
-        ContentTypes::new().text(ContentText::new("Hello {{1}}")),
-    ).variable("1", "Customer"),
+        ContentTypes::new()
+            .text(ContentText::new("Hello {{1}}"))
+            .card(
+                ContentCard::new()
+                    .title("Order update")
+                    .body("Hello {{1}}")
+                    .action(ContentCardAction::url("Track", "https://example.com/orders/{{2}}")),
+            ),
+    ).friendly_name("order_update")
+        .variable("1", "Customer")
+        .variable("2", "12345"),
 ).await?;
 
 account.content().v1().content(template.sid.as_deref().unwrap_or_default())
@@ -71,6 +79,19 @@ account.content().v1().content(template.sid.as_deref().unwrap_or_default())
         "order_update",
         WhatsAppTemplateCategory::Utility,
     )).await?;
+
+let _with_approvals = account.content().v1().content_and_approvals()
+    .list(ListContentRequest::new().page_size(50)).await?;
+let _search = account.content().v2().content_and_approvals()
+    .list(
+        ContentSearchRequest::new()
+            .language("en")
+            .content_type("twilio/card")
+            .channel_eligibility("whatsapp:approved")
+            .content_name("order")
+            .sort_by_date("desc")
+            .sort_by_content_name("asc"),
+    ).await?;
 
 let message = CreateMessageRequest::new("+15551234567")
     .content_sid(template.sid.as_deref().unwrap_or_default())
@@ -93,7 +114,7 @@ For a blocking API, disable defaults and choose `sync` plus a TLS backend:
 
 ```toml
 [dependencies]
-twilio2 = { version = "0.4", default-features = false, features = ["sync", "rustls"] }
+twilio2 = { version = "0.5", default-features = false, features = ["sync", "rustls"] }
 ```
 
 For an async API with a different TLS backend, disable default features and
@@ -101,7 +122,7 @@ choose `async` plus that backend:
 
 ```toml
 [dependencies]
-twilio2 = { version = "0.4", default-features = false, features = ["async", "native-tls"] }
+twilio2 = { version = "0.5", default-features = false, features = ["async", "native-tls"] }
 ```
 
 The `rustls-no-provider` feature is also available for applications that install
@@ -112,7 +133,7 @@ non-default `sensitive-diagnostics` feature:
 
 ```toml
 [dependencies]
-twilio2 = { version = "0.4", features = ["sensitive-diagnostics"] }
+twilio2 = { version = "0.5", features = ["sensitive-diagnostics"] }
 ```
 
 Cargo features are additive. You may enable both `async` and `sync`, and TLS
@@ -292,6 +313,13 @@ credentials are redacted, sensitive key-value fields are replaced with
 `<redacted>`, and URLs are redacted. `Debug` output for returned structs also
 redacts resource identifiers, message bodies, phone numbers, sender IDs, links,
 and URLs to reduce accidental application log leaks.
+
+`TwilioError::Api` exposes the HTTP status and, when Twilio returns a complete
+valid JSON error response, its numeric error code. Server-provided messages,
+documentation URLs, and other fields remain unavailable through normal errors.
+With `sensitive-diagnostics`, response snapshots can parse those fields through
+`SensitiveResponseSnapshot::twilio_api_error`; all returned values from that
+method must be treated as sensitive.
 
 ### Sensitive protocol tracing
 

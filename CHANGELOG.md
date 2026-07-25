@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [0.5.0] - 2026-07-25
+
+### Added
+
+- Add Content API v1 template support.
+- Add opt-in sensitive tracing for protocol debugging.
+
+### Changed
+
+- Expand CI and coverage for sync feature paths and pagination.
+
 ## [0.4.0] - 2026-07-10
 
 ### Changed

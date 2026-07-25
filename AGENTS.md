@@ -66,9 +66,5 @@ path, form body, auth, pagination, status handling, and redaction as applicable.
 
 - Use `rg`/`rg --files` first for repository search.
 - Preserve the user's dirty worktree. Do not revert changes you did not make.
-- For non-trivial or unclear changes, use narrow subagents for reconnaissance,
-  test scouting, plan review, or risk audit before editing.
-- Treat subagent output as evidence, not authority; verify important claims
-  before risky changes.
 - Sensitive areas include auth, redaction, URL validation, pagination, TLS
   features, public API compatibility, and release packaging.

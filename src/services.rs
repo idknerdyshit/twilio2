@@ -137,14 +137,13 @@ impl<'a> ServiceFields<'a> {
                 )));
             }
         }
-        if let Some(validity_period) = self.validity_period {
-            if !(SERVICE_VALIDITY_PERIOD_MIN_SECONDS..=SERVICE_VALIDITY_PERIOD_MAX_SECONDS)
+        if let Some(validity_period) = self.validity_period
+            && !(SERVICE_VALIDITY_PERIOD_MIN_SECONDS..=SERVICE_VALIDITY_PERIOD_MAX_SECONDS)
                 .contains(&validity_period)
-            {
-                return Err(TwilioError::InvalidRequest(format!(
-                    "ValidityPeriod must be in {SERVICE_VALIDITY_PERIOD_MIN_SECONDS}..={SERVICE_VALIDITY_PERIOD_MAX_SECONDS}"
-                )));
-            }
+        {
+            return Err(TwilioError::InvalidRequest(format!(
+                "ValidityPeriod must be in {SERVICE_VALIDITY_PERIOD_MIN_SECONDS}..={SERVICE_VALIDITY_PERIOD_MAX_SECONDS}"
+            )));
         }
         Ok(())
     }

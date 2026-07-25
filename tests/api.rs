@@ -357,7 +357,7 @@ fn assert_decode_error(err: &TwilioError) {
 
 fn assert_api_error_redacted(err: TwilioError, expected_status: u16, leaked: &[&str]) {
     match err {
-        TwilioError::Api { status, body } => {
+        TwilioError::Api { status, body, .. } => {
             assert_eq!(status, expected_status);
             for value in leaked {
                 assert!(
@@ -664,7 +664,7 @@ async fn pricing_messaging_countries_validate_requests_and_page_urls() {
         .unwrap_err();
     assert!(matches!(err, TwilioError::InvalidResponseMetadata(_)));
 
-    assert!(server.requests().len() == 1);
+    assert_eq!(server.requests().len(), 1);
 }
 
 #[tokio::test]
@@ -3636,11 +3636,12 @@ async fn api_error_bodies_are_diagnostic_limited() {
         .await
         .unwrap_err();
     assert!(matches!(err, TwilioError::Api { .. }));
-    let TwilioError::Api { status, body } = err else {
+    let TwilioError::Api { status, code, body } = err else {
         return;
     };
 
     assert_eq!(status, 500);
+    assert_eq!(code, None);
     assert!(body.starts_with("<redacted response body; "));
     assert!(!body.contains(tail));
 }

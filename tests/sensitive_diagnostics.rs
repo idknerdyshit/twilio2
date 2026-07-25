@@ -268,6 +268,9 @@ async fn retry_attempts_emit_request_and_response_snapshots() {
                 assert_eq!(response.attempt, expected_attempt);
                 assert_eq!(response.max_retries, 1);
                 assert_eq!(response.status, status);
+                if (200..300).contains(&status) {
+                    assert!(response.twilio_api_error().is_none());
+                }
             }
             _ => panic!("unexpected event ordering: {events:#?}"),
         }
@@ -291,6 +294,7 @@ async fn large_api_error_captures_full_raw_response_but_returns_redacted_public_
     let TwilioError::Api {
         status,
         body: public_body,
+        ..
     } = err
     else {
         panic!("expected API error");
@@ -310,6 +314,64 @@ async fn large_api_error_captures_full_raw_response_but_returns_redacted_public_
     assert_eq!(response.status, 500);
     assert_eq!(response.body.as_ref(), body.as_bytes());
     assert!(std::str::from_utf8(&response.body).unwrap().contains(tail));
+    assert!(response.twilio_api_error().is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sensitive_response_parses_structured_twilio_api_error() {
+    let body = concat!(
+        r#"{"code":21606,"message":"phone +15551234567 failed","#,
+        r#""more_info":"https://www.twilio.com/docs/errors/21606","#,
+        r#""status":400,"detail":{"sid":"HXsecret","body":"secret content"}}"#
+    );
+    let server = HttpsMockServer::start(vec![MockResponse::status_json(400, body)]).await;
+    let (diagnostics, events) = capture();
+    let client = client_with(&server.base_url, diagnostics);
+
+    let error = client
+        .account(test_creds())
+        .send_with_options(GetJsonOperation, RequestOptions::new())
+        .await
+        .unwrap_err();
+    let TwilioError::Api {
+        status,
+        code,
+        body: public_body,
+    } = error
+    else {
+        panic!("expected API error");
+    };
+    assert_eq!(status, 400);
+    assert_eq!(code, Some(21606));
+    for secret in ["+15551234567", "twilio.com", "HXsecret", "secret content"] {
+        assert!(!public_body.contains(secret), "{public_body}");
+    }
+
+    let events = captured(&events);
+    let SensitiveDiagnosticEvent::Response(response) = &events[1] else {
+        panic!("expected response event: {events:#?}");
+    };
+    let details = response
+        .twilio_api_error()
+        .expect("structured Twilio API error");
+    assert_eq!(details.code, Some(21606));
+    assert_eq!(details.status, Some(400));
+    assert_eq!(
+        details.message.as_deref(),
+        Some("phone +15551234567 failed")
+    );
+    assert_eq!(
+        details.more_info.as_deref(),
+        Some("https://www.twilio.com/docs/errors/21606")
+    );
+    assert_eq!(
+        details.additional_fields["detail"]["body"],
+        "secret content"
+    );
+    let rendered = format!("{details:?}");
+    for secret in ["+15551234567", "twilio.com", "HXsecret", "secret content"] {
+        assert!(!rendered.contains(secret), "{rendered}");
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

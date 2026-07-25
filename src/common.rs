@@ -64,10 +64,16 @@ pub enum TwilioError {
     InvalidResponseMetadata(String),
     #[error("http transport error: {0}")]
     Transport(String),
-    /// Non-2xx response. `status` is the HTTP code; `body` is a redacted
-    /// length-only diagnostic and never contains server-provided response text.
+    /// Non-2xx response. `status` is the HTTP code, `code` is Twilio's numeric
+    /// error code when a complete JSON error response supplied one, and `body`
+    /// is a redacted length-only diagnostic that never contains
+    /// server-provided response text.
     #[error("twilio api error: status {status}")]
-    Api { status: u16, body: String },
+    Api {
+        status: u16,
+        code: Option<u32>,
+        body: String,
+    },
     #[error("malformed twilio response: {0}")]
     Decode(String),
 }
@@ -743,6 +749,8 @@ pub enum ApiFamily {
     PricingV2,
     /// Twilio Content v1 API under [`DEFAULT_CONTENT_BASE_URL`].
     ContentV1,
+    /// Twilio Content v2 API under [`DEFAULT_CONTENT_BASE_URL`].
+    ContentV2,
     /// Twilio Accounts v1 API rooted at [`DEFAULT_ACCOUNTS_BASE_URL`].
     Accounts,
 }
@@ -1111,7 +1119,7 @@ impl RequestOptions {
                 .map(normalize_product_root_base_url)
                 .transpose()
                 .map_err(TwilioError::InvalidBaseUrl),
-            ApiFamily::ContentV1 => self
+            ApiFamily::ContentV1 | ApiFamily::ContentV2 => self
                 .content_base_url
                 .as_deref()
                 .map(normalize_product_root_base_url)
@@ -1491,10 +1499,20 @@ impl<T: fmt::Debug> fmt::Debug for ApiResponse<T> {
 /// Returns [`TwilioError::Decode`] when the body does not match `T`.
 pub fn decode_json_response<T: serde::de::DeserializeOwned>(
     raw: &RawResponse,
-    sensitive_values: &[&str],
+    _sensitive_values: &[&str],
 ) -> Result<T, TwilioError> {
     serde_json::from_slice(&raw.body).map_err(|e| {
-        let message = sanitize_diagnostic(e.to_string(), sensitive_values);
+        let category = match e.classify() {
+            serde_json::error::Category::Io => "I/O",
+            serde_json::error::Category::Syntax => "syntax",
+            serde_json::error::Category::Data => "data",
+            serde_json::error::Category::Eof => "EOF",
+        };
+        let message = format!(
+            "{category} error at line {} column {}",
+            e.line(),
+            e.column()
+        );
         tracing::warn!(error = %message, "failed to decode twilio response");
         TwilioError::Decode(message)
     })
@@ -1771,12 +1789,12 @@ pub(crate) fn has_non_empty(value: Option<&str>) -> bool {
 }
 
 pub(crate) fn validate_page_size(page_size: Option<u32>) -> Result<(), TwilioError> {
-    if let Some(page_size) = page_size {
-        if !(1..=1000).contains(&page_size) {
-            return Err(TwilioError::InvalidRequest(
-                "PageSize must be in 1..=1000".to_owned(),
-            ));
-        }
+    if let Some(page_size) = page_size
+        && !(1..=1000).contains(&page_size)
+    {
+        return Err(TwilioError::InvalidRequest(
+            "PageSize must be in 1..=1000".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -1809,19 +1827,36 @@ impl std::fmt::Debug for TwilioMediaContent {
     }
 }
 
+fn twilio_api_error_code(body: &[u8]) -> Option<u32> {
+    #[derive(Deserialize)]
+    struct WireApiError {
+        code: Option<u32>,
+    }
+
+    serde_json::from_slice::<WireApiError>(body)
+        .ok()
+        .and_then(|error| error.code)
+}
+
 pub(crate) fn api_error_from_text(
     status: u16,
     body: &str,
+    complete: bool,
     _sensitive_values: &[&str],
 ) -> TwilioError {
     let body_len = body.len();
+    let code = complete
+        .then(|| twilio_api_error_code(body.as_bytes()))
+        .flatten();
     tracing::warn!(
         http.status_code = status,
+        twilio.error_code = code,
         response.body_len = body_len,
         "twilio api error"
     );
     TwilioError::Api {
         status,
+        code,
         body: format!("<redacted response body; {body_len} bytes>"),
     }
 }
@@ -1892,9 +1927,15 @@ pub(crate) fn read_limited_reader_body<R: std::io::Read>(
 pub(crate) fn api_error_from_body(
     status: u16,
     body: &[u8],
+    complete: bool,
     sensitive_values: &[&str],
 ) -> TwilioError {
-    api_error_from_text(status, &String::from_utf8_lossy(body), sensitive_values)
+    api_error_from_text(
+        status,
+        &String::from_utf8_lossy(body),
+        complete,
+        sensitive_values,
+    )
 }
 
 #[cfg(feature = "async")]
@@ -1903,7 +1944,12 @@ pub(crate) fn api_error_from_body_read_error(
     error: &reqwest::Error,
     sensitive_values: &[&str],
 ) -> TwilioError {
-    api_error_from_text(status, &reqwest_error_message(error), sensitive_values)
+    api_error_from_text(
+        status,
+        &reqwest_error_message(error),
+        false,
+        sensitive_values,
+    )
 }
 
 #[cfg(feature = "sync")]
@@ -1912,7 +1958,7 @@ pub(crate) fn api_error_from_read_error_message(
     message: impl Into<String>,
     sensitive_values: &[&str],
 ) -> TwilioError {
-    api_error_from_text(status, &message.into(), sensitive_values)
+    api_error_from_text(status, &message.into(), false, sensitive_values)
 }
 
 #[cfg(feature = "async")]
@@ -1935,10 +1981,10 @@ pub(crate) fn transport_error_from_message(
 #[cfg(feature = "async")]
 fn reqwest_error_message(e: &reqwest::Error) -> String {
     let mut msg = e.to_string();
-    if let Some(status) = e.status() {
-        if !msg.contains(status.as_str()) {
-            msg = format!("status {status}: {msg}");
-        }
+    if let Some(status) = e.status()
+        && !msg.contains(status.as_str())
+    {
+        msg = format!("status {status}: {msg}");
     }
     if let Some(source) = e.source() {
         let source = source.to_string();
@@ -2232,7 +2278,7 @@ pub(crate) fn normalize_product_root_base_url(raw: &str) -> Result<Url, String> 
     let url = normalize_base_url(raw)?;
     if url
         .path_segments()
-        .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back())
+        .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
         .is_some_and(|segment| matches!(segment.to_ascii_lowercase().as_str(), "v1" | "v2" | "v3"))
     {
         return Err(
@@ -2384,22 +2430,68 @@ pub(crate) fn messaging_v2_page_url_from_base(
     Ok(url)
 }
 
-pub(crate) fn content_v1_page_url_from_base(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContentPageResource {
+    V1Content,
+    V1ContentAndApprovals,
+    V1LegacyContent,
+    V2Content,
+    V2ContentAndApprovals,
+}
+
+impl ContentPageResource {
+    fn version(self) -> &'static str {
+        match self {
+            Self::V1Content | Self::V1ContentAndApprovals | Self::V1LegacyContent => "v1",
+            Self::V2Content | Self::V2ContentAndApprovals => "v2",
+        }
+    }
+
+    fn path(self) -> &'static str {
+        match self {
+            Self::V1Content | Self::V2Content => "Content",
+            Self::V1ContentAndApprovals | Self::V2ContentAndApprovals => "ContentAndApprovals",
+            Self::V1LegacyContent => "LegacyContent",
+        }
+    }
+
+    fn is_v2(self) -> bool {
+        matches!(self, Self::V2Content | Self::V2ContentAndApprovals)
+    }
+}
+
+pub(crate) fn content_page_url_from_base(
     base_url: &Url,
     next_page_url: &str,
+    resource: ContentPageResource,
 ) -> Result<Url, TwilioError> {
     let url = page_url_from_base(base_url, next_page_url)?;
     validate_page_origin(base_url, &url, "next_page_url")?;
     let segments = api_segments(base_url, &url)?;
-    if segments != ["v1", "Content"] {
+    if segments != [resource.version(), resource.path()] {
         return Err(TwilioError::InvalidResponseMetadata(
-            "next_page_url is not a Content page".to_owned(),
+            "next_page_url is not a page for this Content resource".to_owned(),
         ));
     }
     validate_page_query_keys(
         &url,
-        |key| matches!(key, "PageSize" | "Page" | "PageToken"),
-        |_key| false,
+        |key| {
+            matches!(key, "PageSize" | "Page" | "PageToken")
+                || resource.is_v2()
+                    && matches!(
+                        key,
+                        "Language"
+                            | "ContentType"
+                            | "ChannelEligibility"
+                            | "Content"
+                            | "ContentName"
+                            | "SortByDate"
+                            | "SortByContentName"
+                            | "DateCreatedBefore"
+                            | "DateCreatedAfter"
+                    )
+        },
+        |key| resource.is_v2() && matches!(key, "Language" | "ContentType" | "ChannelEligibility"),
     )?;
     Ok(url)
 }
@@ -2800,19 +2892,38 @@ pub(crate) fn validate_messaging_v2_next_page_continuation(
     Ok(())
 }
 
-pub(crate) fn validate_content_v1_next_page_continuation(
+pub(crate) fn validate_content_next_page_continuation(
     current_url: &Url,
     next_url: &Url,
+    resource: ContentPageResource,
 ) -> Result<(), TwilioError> {
     if current_url.path() != next_url.path() {
         return Err(TwilioError::InvalidResponseMetadata(
             "next_page_url changed resource path".to_owned(),
         ));
     }
-    if !stable_page_query_matches(current_url, next_url, "PageSize") {
-        return Err(TwilioError::InvalidResponseMetadata(
-            "next_page_url changed PageSize query parameter".to_owned(),
-        ));
+    let stable_keys: &[&str] = if resource.is_v2() {
+        &[
+            "Language",
+            "ContentType",
+            "ChannelEligibility",
+            "Content",
+            "ContentName",
+            "SortByDate",
+            "SortByContentName",
+            "DateCreatedBefore",
+            "DateCreatedAfter",
+            "PageSize",
+        ]
+    } else {
+        &["PageSize"]
+    };
+    for key in stable_keys {
+        if !stable_page_query_matches(current_url, next_url, key) {
+            return Err(TwilioError::InvalidResponseMetadata(format!(
+                "next_page_url changed {key} query parameter"
+            )));
+        }
     }
     Ok(())
 }
@@ -2960,12 +3071,12 @@ pub(crate) fn validate_v1_meta_key(
     meta: &V1PageMeta,
     resource: V1PageResource<'_>,
 ) -> Result<(), TwilioError> {
-    if let Some(key) = meta.key.as_deref() {
-        if key != resource.response_key() {
-            return Err(TwilioError::InvalidResponseMetadata(
-                "page meta key does not match the expected resource".to_owned(),
-            ));
-        }
+    if let Some(key) = meta.key.as_deref()
+        && key != resource.response_key()
+    {
+        return Err(TwilioError::InvalidResponseMetadata(
+            "page meta key does not match the expected resource".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -2974,12 +3085,12 @@ pub(crate) fn validate_pricing_meta_key(
     meta: &V1PageMeta,
     resource: PricingPageResource,
 ) -> Result<(), TwilioError> {
-    if let Some(key) = meta.key.as_deref() {
-        if key != resource.response_key() {
-            return Err(TwilioError::InvalidResponseMetadata(
-                "page meta key does not match the expected resource".to_owned(),
-            ));
-        }
+    if let Some(key) = meta.key.as_deref()
+        && key != resource.response_key()
+    {
+        return Err(TwilioError::InvalidResponseMetadata(
+            "page meta key does not match the expected resource".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -2988,12 +3099,12 @@ pub(crate) fn validate_messaging_v2_meta_key(
     meta: &V1PageMeta,
     resource: MessagingV2PageResource,
 ) -> Result<(), TwilioError> {
-    if let Some(key) = meta.key.as_deref() {
-        if key != resource.response_key() {
-            return Err(TwilioError::InvalidResponseMetadata(
-                "page meta key does not match the expected resource".to_owned(),
-            ));
-        }
+    if let Some(key) = meta.key.as_deref()
+        && key != resource.response_key()
+    {
+        return Err(TwilioError::InvalidResponseMetadata(
+            "page meta key does not match the expected resource".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -3377,9 +3488,10 @@ mod tests {
     use crate::diagnostics::SensitiveDiagnostics;
 
     use super::{
-        LegacyPageResource, MessagingV2PageResource, PricingPageResource, RequestOptions,
-        RetryPolicy, TwilioAuth, TwilioClientConfig, TwilioConfig, TwilioError, V1PageResource,
-        endpoint_url_from_base, legacy_page_uri_url_from_base, normalize_base_url,
+        ContentPageResource, LegacyPageResource, MessagingV2PageResource, PricingPageResource,
+        RequestOptions, RetryPolicy, TwilioAuth, TwilioClientConfig, TwilioConfig, TwilioError,
+        V1PageResource, api_error_from_body, content_page_url_from_base, endpoint_url_from_base,
+        legacy_page_uri_url_from_base, normalize_base_url, normalize_product_root_base_url,
         sanitize_diagnostic, v1_page_url_from_base, validate_legacy_next_page_continuation,
         validate_messaging_v2_next_page_continuation, validate_pricing_next_page_continuation,
         validate_v1_next_page_continuation,
@@ -3904,6 +4016,58 @@ mod tests {
         )
         .expect_err("unsupported query key should be rejected");
         assert!(!format!("{error:?}").contains("+15551234567"));
+    }
+
+    #[test]
+    fn api_error_code_requires_complete_valid_bounded_json() {
+        let error = api_error_from_body(400, br#"{"code":21606}"#, true, &[]);
+        assert!(matches!(
+            error,
+            TwilioError::Api {
+                status: 400,
+                code: Some(21606),
+                ..
+            }
+        ));
+
+        for (body, complete) in [
+            (br#"{"message":"missing"}"#.as_slice(), true),
+            (br#"{"code":-1}"#.as_slice(), true),
+            (br#"{"code":4294967296}"#.as_slice(), true),
+            (br#"{"code":21606"#.as_slice(), true),
+            (br#"{"code":21606}"#.as_slice(), false),
+        ] {
+            let error = api_error_from_body(400, body, complete, &[]);
+            assert!(
+                matches!(error, TwilioError::Api { code: None, .. }),
+                "unexpectedly accepted error code from {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn content_page_validation_confines_custom_prefix_and_query_shape() {
+        let base = normalize_product_root_base_url("https://proxy.example.test/twilio-content")
+            .expect("valid Content proxy base");
+        let resource = ContentPageResource::V2Content;
+        let valid = concat!(
+            "https://proxy.example.test/twilio-content/v2/Content?",
+            "Language=en&Language=fr&Content=order&PageSize=50&Page=1&PageToken=next"
+        );
+        assert!(content_page_url_from_base(&base, valid, resource).is_ok());
+
+        for invalid in [
+            "https://proxy.example.test/v2/Content?PageSize=50&PageToken=next",
+            "https://proxy.example.test/twilio-content/v2/Content?Unknown=value",
+            "https://proxy.example.test/twilio-content/v2/Content?Content=one&Content=two",
+            "https://proxy.example.test/twilio-content/v2/Content?SortByDate=asc&SortByDate=desc",
+            "https://proxy.example.test/twilio-content/v1/Content?PageSize=50&PageToken=next",
+        ] {
+            assert!(
+                content_page_url_from_base(&base, invalid, resource).is_err(),
+                "accepted invalid Content continuation"
+            );
+        }
     }
 
     #[test]

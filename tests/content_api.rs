@@ -10,9 +10,10 @@ mod support;
 use serde_json::json;
 use support::{HttpsMockServer, MockResponse, test_creds};
 use twilio2::{
-    ContentAction, ContentCard, ContentMedia, ContentQuickReply, ContentText, ContentTypes,
-    CreateContentRequest, DeleteContentRequest, ListContentRequest, SubmitWhatsAppApprovalRequest,
-    TwilioError, UpdateContentRequest, WhatsAppTemplateCategory,
+    ContentCard, ContentCardAction, ContentMedia, ContentQuickReply, ContentQuickReplyAction,
+    ContentSearchRequest, ContentText, ContentTypes, CreateContentRequest, DeleteContentRequest,
+    ListContentRequest, SubmitWhatsAppApprovalRequest, TwilioError, UpdateContentRequest,
+    WhatsAppTemplateCategory,
 };
 
 const SID: &str = "HXaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -83,21 +84,26 @@ async fn async_content_lifecycle_and_approvals_use_expected_wire_contract() {
         .text(ContentText::new("Hello {{1}}"))
         .media(ContentMedia::new(["https://example.test/image.jpg"]).body("Media"))
         .quick_reply(
-            ContentQuickReply::new("Choose").action(ContentAction::quick_reply("track", "Track")),
+            ContentQuickReply::new("Choose")
+                .action(ContentQuickReplyAction::new("Track").id("track")),
         )
         .card(
             ContentCard::new()
                 .title("Order")
-                .action(ContentAction::url("Open", "https://example.test")),
+                .action(ContentCardAction::url("Open", "https://example.test")),
         )
-        .custom("vendor/future", &custom)
+        .custom("vendor/future", custom.clone())
         .unwrap();
 
     let created = account
         .content()
         .v1()
         .contents()
-        .create(CreateContentRequest::new("order_update", "en", types).variable("1", "Customer"))
+        .create(
+            CreateContentRequest::new("en", types)
+                .friendly_name("order_update")
+                .variable("1", "Customer"),
+        )
         .await
         .unwrap();
     assert_eq!(created.sid.as_deref(), Some(SID));
@@ -124,7 +130,10 @@ async fn async_content_lifecycle_and_approvals_use_expected_wire_contract() {
         .content()
         .v1()
         .content(SID)
-        .update(UpdateContentRequest::new().friendly_name("renamed"))
+        .update(
+            UpdateContentRequest::new(ContentTypes::new().text(ContentText::new("Hello {{1}}")))
+                .friendly_name("renamed"),
+        )
         .await
         .unwrap();
     let approvals = account.content().v1().content(SID).approval_requests();
@@ -181,6 +190,116 @@ async fn async_content_lifecycle_and_approvals_use_expected_wire_contract() {
     assert_eq!(create["types"]["vendor/future"], custom);
     assert_eq!(create["types"]["twilio/card"]["title"], "Order");
     assert_eq!(requests[4].method, "PUT");
+    let update: serde_json::Value = serde_json::from_str(&requests[4].body).unwrap();
+    assert!(update.get("language").is_none());
+}
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn content_routes_report_structured_redacted_api_errors() {
+    let sensitive_message = "failed for HXbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb +15551234567";
+    let server = HttpsMockServer::start(vec![
+        MockResponse::status_json(
+            400,
+            json!({
+                "code": 21606,
+                "message": sensitive_message,
+                "more_info": "https://www.twilio.com/docs/errors/21606",
+                "status": 400
+            })
+            .to_string(),
+        ),
+        MockResponse::status_json(
+            500,
+            json!({
+                "code": 20500,
+                "message": "internal error for secret content",
+                "more_info": "https://www.twilio.com/docs/errors/20500",
+                "status": 500
+            })
+            .to_string(),
+        ),
+    ])
+    .await;
+    let client = support::client_for(&server);
+    let account = client.account(test_creds());
+
+    let v1_error = account
+        .content()
+        .v1()
+        .content(SID)
+        .fetch()
+        .await
+        .unwrap_err();
+    let TwilioError::Api { status, code, body } = v1_error else {
+        panic!("expected Content v1 API error");
+    };
+    assert_eq!(status, 400);
+    assert_eq!(code, Some(21606));
+    assert!(body.starts_with("<redacted response body; "));
+    assert!(!body.contains(sensitive_message));
+    assert!(!body.contains("twilio.com"));
+
+    let v2_error = account
+        .content()
+        .v2()
+        .contents()
+        .list(ContentSearchRequest::new())
+        .await
+        .unwrap_err();
+    let TwilioError::Api { status, code, body } = v2_error else {
+        panic!("expected Content v2 API error");
+    };
+    assert_eq!(status, 500);
+    assert_eq!(code, Some(20500));
+    assert!(body.starts_with("<redacted response body; "));
+    assert!(!body.contains("secret content"));
+    assert!(!body.contains("twilio.com"));
+}
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn content_routes_redact_malformed_success_responses() {
+    let server = HttpsMockServer::start(vec![
+        MockResponse::json(r#"{"sid":"HXsecret","types":"secret-content""#),
+        MockResponse::json(r#"{"contents":[{"sid":"HXsecret"}],"meta":"secret-content""#),
+        MockResponse::json(r#"{"contents":[{"sid":"HXsecret"}],"meta":"secret-content""#),
+    ])
+    .await;
+    let client = support::client_for(&server);
+    let account = client.account(test_creds());
+
+    let errors = [
+        account
+            .content()
+            .v1()
+            .content(SID)
+            .fetch()
+            .await
+            .unwrap_err(),
+        account
+            .content()
+            .v2()
+            .contents()
+            .list(ContentSearchRequest::new())
+            .await
+            .unwrap_err(),
+        account
+            .content()
+            .v2()
+            .content_and_approvals()
+            .list(ContentSearchRequest::new())
+            .await
+            .unwrap_err(),
+    ];
+
+    for error in errors {
+        let TwilioError::Decode(message) = error else {
+            panic!("expected malformed Content response");
+        };
+        assert!(!message.contains("HXsecret"));
+        assert!(!message.contains("secret-content"));
+    }
 }
 
 #[cfg(feature = "async")]
@@ -197,7 +316,18 @@ async fn content_validation_and_pagination_reject_unsafe_inputs() {
         .content()
         .v1()
         .contents()
-        .create(CreateContentRequest::new("name", "en", ContentTypes::new()))
+        .create(CreateContentRequest::new(
+            "en",
+            ContentTypes::new().quick_reply(ContentQuickReply::new("Choose")),
+        ))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, TwilioError::InvalidRequest(_)));
+    let error = account
+        .content()
+        .v1()
+        .contents()
+        .create(CreateContentRequest::new("en", ContentTypes::new()).friendly_name("name"))
         .await
         .unwrap_err();
     assert!(matches!(error, TwilioError::InvalidRequest(message) if message.contains("Types")));
@@ -225,7 +355,7 @@ async fn content_validation_and_pagination_reject_unsafe_inputs() {
         .content()
         .v1()
         .contents()
-        .list(ListContentRequest::new().page_size(501))
+        .list(ListContentRequest::new().page_size(1001))
         .await
         .unwrap_err();
     assert!(matches!(error, TwilioError::InvalidRequest(_)));
@@ -268,10 +398,11 @@ fn content_debug_output_is_redacted() {
     let custom = json!({"secret": "custom-secret"});
     let types = ContentTypes::new()
         .text(ContentText::new("body-secret"))
-        .custom("vendor/x", &custom)
+        .custom("vendor/x", custom)
         .unwrap();
-    let request =
-        CreateContentRequest::new("friendly-secret", "en", types).variable("1", "variable-secret");
+    let request = CreateContentRequest::new("en", types)
+        .friendly_name("friendly-secret")
+        .variable("1", "variable-secret");
     let rendered = format!("{request:?}");
     for secret in [
         "body-secret",
@@ -282,6 +413,19 @@ fn content_debug_output_is_redacted() {
         assert!(!rendered.contains(secret));
     }
     assert!(rendered.contains("<redacted>"));
+
+    let search = ContentSearchRequest::new()
+        .content("search-body-secret")
+        .content_name("search-name-secret")
+        .page_token("page-token-secret");
+    let rendered = format!("{search:?}");
+    for secret in [
+        "search-body-secret",
+        "search-name-secret",
+        "page-token-secret",
+    ] {
+        assert!(!rendered.contains(secret));
+    }
 }
 
 #[cfg(feature = "sync")]
@@ -300,7 +444,7 @@ fn blocking_content_create_fetch_and_delete_work() {
         .content()
         .v1()
         .contents()
-        .create(CreateContentRequest::new("name", "en", types))
+        .create(CreateContentRequest::new("en", types).friendly_name("name"))
         .unwrap();
     account.content().v1().content(SID).fetch().unwrap();
     account

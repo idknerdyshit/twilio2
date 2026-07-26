@@ -7,11 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed
+
+- **Breaking:** Replace the experimental Bulk Messaging surface with matching
+  async and blocking Messages, Senders, and Sender Pools resource trees,
+  including seek, search/resolve, CRUD, membership, operations, polling, and
+  `{ next, self }` token pagination.
+- **Breaking:** Align Bulk Messaging Public Beta recipients, content modules,
+  Sender Pool channel controls, response unions, required fields, and operation
+  statistics with Twilio's published schemas.
+- **Breaking:** Extend redacted API errors with all numeric codes, allowlisted JSON-path
+  contexts, and parsed delta-seconds `Retry-After` values.
+
 ### Added
 
-- Add async and blocking Bulk Messaging v1 Messages and Operations support,
-  including typed JSON submissions, token pagination, operation polling, and
-  custom `comms.twilio.com` base URL configuration.
+- Add typed decoding for all ten documented Bulk Messaging Event Streams
+  schemas, batched `CloudEvents` webhooks, and unknown-event preservation.
 
 ## [0.5.0] - 2026-07-25
 

@@ -52,6 +52,24 @@ pub const DEFAULT_PAGE_SIZE: u32 = 50;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_USER_AGENT: &str = concat!("twilio2-rs/", env!("CARGO_PKG_VERSION"));
 
+/// One redacted error detail returned by a Twilio JSON error envelope.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TwilioApiErrorDetail {
+    /// Twilio's numeric error code.
+    pub code: u32,
+    /// A conservative, structural JSON path supplied by Bulk Messaging.
+    pub context: Option<String>,
+}
+
+impl fmt::Debug for TwilioApiErrorDetail {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TwilioApiErrorDetail")
+            .field("code", &self.code)
+            .field("context", &self.context)
+            .finish()
+    }
+}
+
 /// Error type for request validation, transport, API, decode, and response
 /// metadata failures.
 ///
@@ -75,6 +93,10 @@ pub enum TwilioError {
     Api {
         status: u16,
         code: Option<u32>,
+        /// Every numeric code in a complete structured error envelope.
+        details: Vec<TwilioApiErrorDetail>,
+        /// Server-requested retry delay, when `Retry-After` used delta seconds.
+        retry_after: Option<Duration>,
         body: String,
     },
     #[error("malformed twilio response: {0}")]
@@ -1917,37 +1939,119 @@ impl std::fmt::Debug for TwilioMediaContent {
     }
 }
 
-fn twilio_api_error_code(body: &[u8]) -> Option<u32> {
+fn twilio_api_error_details(body: &[u8]) -> Vec<TwilioApiErrorDetail> {
     #[derive(Deserialize)]
     struct WireApiError {
         code: Option<u32>,
+        context: Option<String>,
         #[serde(default)]
         errors: Vec<WireNestedApiError>,
     }
     #[derive(Deserialize)]
     struct WireNestedApiError {
         code: Option<u32>,
+        context: Option<String>,
     }
 
     serde_json::from_slice::<WireApiError>(body)
         .ok()
-        .and_then(|error| {
+        .map(|error| {
             error
                 .code
-                .or_else(|| error.errors.first().and_then(|nested| nested.code))
+                .map(|code| TwilioApiErrorDetail {
+                    code,
+                    context: safe_bulk_error_context(error.context.as_deref()),
+                })
+                .into_iter()
+                .chain(error.errors.into_iter().filter_map(|nested| {
+                    nested.code.map(|code| TwilioApiErrorDetail {
+                        code,
+                        context: safe_bulk_error_context(nested.context.as_deref()),
+                    })
+                }))
+                .collect()
         })
+        .unwrap_or_default()
+}
+
+fn safe_bulk_error_context(value: Option<&str>) -> Option<String> {
+    let value = value?;
+    if value == "null" || !value.starts_with("$.") || value.len() > 160 {
+        return None;
+    }
+    let allowed = [
+        "to",
+        "addresses",
+        "address",
+        "channel",
+        "profileId",
+        "memoryStoreId",
+        "variables",
+        "content",
+        "text",
+        "media",
+        "url",
+        "contentId",
+        "modules",
+        "sms",
+        "rcs",
+        "from",
+        "senderId",
+        "senderPoolId",
+        "channels",
+        "filterIn",
+        "priority",
+        "schedule",
+        "sendAt",
+        "tags",
+        "recipientAddresses",
+        "senderAddresses",
+        "displayName",
+        "credentialSid",
+        "startDate",
+        "endDate",
+        "operationId",
+        "pageToken",
+        "pageSize",
+        "status",
+        "name",
+        "senders",
+    ];
+    let mut token = String::new();
+    for byte in value.bytes().chain(*b".") {
+        if byte.is_ascii_alphanumeric() {
+            token.push(char::from(byte));
+        } else {
+            if !token.is_empty() {
+                if !token.bytes().all(|byte| byte.is_ascii_digit())
+                    && !allowed.contains(&token.as_str())
+                {
+                    return None;
+                }
+                token.clear();
+            }
+            if !matches!(byte, b'$' | b'.' | b'[' | b']') {
+                return None;
+            }
+        }
+    }
+    Some(value.to_owned())
 }
 
 pub(crate) fn api_error_from_text(
     status: u16,
     body: &str,
     complete: bool,
+    retry_after: Option<Duration>,
     _sensitive_values: &[&str],
 ) -> TwilioError {
     let body_len = body.len();
-    let code = complete
-        .then(|| twilio_api_error_code(body.as_bytes()))
-        .flatten();
+    let details = if complete {
+        twilio_api_error_details(body.as_bytes())
+    } else {
+        Vec::new()
+    };
+    let code = details.first().map(|detail| detail.code);
     tracing::warn!(
         http.status_code = status,
         twilio.error_code = code,
@@ -1957,8 +2061,18 @@ pub(crate) fn api_error_from_text(
     TwilioError::Api {
         status,
         code,
+        details,
+        retry_after,
         body: format!("<redacted response body; {body_len} bytes>"),
     }
+}
+
+pub(crate) fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
+    headers
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
 }
 
 pub(crate) struct LimitedResponseBody {
@@ -2028,12 +2142,14 @@ pub(crate) fn api_error_from_body(
     status: u16,
     body: &[u8],
     complete: bool,
+    retry_after: Option<Duration>,
     sensitive_values: &[&str],
 ) -> TwilioError {
     api_error_from_text(
         status,
         &String::from_utf8_lossy(body),
         complete,
+        retry_after,
         sensitive_values,
     )
 }
@@ -2048,6 +2164,7 @@ pub(crate) fn api_error_from_body_read_error(
         status,
         &reqwest_error_message(error),
         false,
+        None,
         sensitive_values,
     )
 }
@@ -2058,7 +2175,7 @@ pub(crate) fn api_error_from_read_error_message(
     message: impl Into<String>,
     sensitive_values: &[&str],
 ) -> TwilioError {
-    api_error_from_text(status, &message.into(), false, sensitive_values)
+    api_error_from_text(status, &message.into(), false, None, sensitive_values)
 }
 
 #[cfg(feature = "async")]
@@ -4123,7 +4240,7 @@ mod tests {
 
     #[test]
     fn api_error_code_requires_complete_valid_bounded_json() {
-        let error = api_error_from_body(400, br#"{"code":21606}"#, true, &[]);
+        let error = api_error_from_body(400, br#"{"code":21606}"#, true, None, &[]);
         assert!(matches!(
             error,
             TwilioError::Api {
@@ -4140,7 +4257,7 @@ mod tests {
             (br#"{"code":21606"#.as_slice(), true),
             (br#"{"code":21606}"#.as_slice(), false),
         ] {
-            let error = api_error_from_body(400, body, complete, &[]);
+            let error = api_error_from_body(400, body, complete, None, &[]);
             assert!(
                 matches!(error, TwilioError::Api { code: None, .. }),
                 "unexpectedly accepted error code from {body:?}"

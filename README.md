@@ -259,10 +259,19 @@ Media endpoint, returning `TwilioMediaContent { content_type, bytes }`.
 
 ## Bulk Messaging
 
-Bulk Messaging v1 is available in matching async and blocking resource trees:
-`account.bulk_messaging().v1().messages()`. It supports typed bulk submissions,
-message and operation fetch/list calls, token pagination, and operation polling.
+Twilio Bulk Messaging is a Public Beta API. Its v1 surface is available in
+matching async and blocking resource trees:
+`messages()`, `senders()`, and `sender_pools()`. It supports typed bulk
+submissions, SM/MM SID seek, sender search and resolution, Sender Pool CRUD and
+membership, both operation collections, token pagination, and polling.
 Submissions use JSON and may target up to 10,000 recipients.
+
+The crate also decodes Twilio's batched `CloudEvents` 1.0 webhooks with
+`parse_bulk_messaging_events`. All ten documented Bulk Messaging event types
+have typed variants and subscription/schema constants. To avoid retaining
+sensitive event payloads, returned event identifiers and data values are
+redacted and unknown event payloads are discarded. Event Sink and Subscription
+management remains part of Twilio's separate Events API.
 
 ## Custom Base URLs
 
@@ -323,9 +332,10 @@ credentials are redacted, sensitive key-value fields are replaced with
 redacts resource identifiers, message bodies, phone numbers, sender IDs, links,
 and URLs to reduce accidental application log leaks.
 
-`TwilioError::Api` exposes the HTTP status and, when Twilio returns a complete
-valid JSON error response, its numeric error code. Server-provided messages,
-documentation URLs, and other fields remain unavailable through normal errors.
+`TwilioError::Api` exposes the HTTP status, all numeric error codes and safe
+structural JSON-path contexts from a complete valid error envelope, and a
+delta-seconds `Retry-After` value when present. Server-provided messages,
+documentation URLs, and unsafe contexts remain unavailable through normal errors.
 With `sensitive-diagnostics`, response snapshots can parse those fields through
 `SensitiveResponseSnapshot::twilio_api_error`; all returned values from that
 method must be treated as sensitive.

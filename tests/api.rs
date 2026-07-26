@@ -3636,7 +3636,10 @@ async fn api_error_bodies_are_diagnostic_limited() {
         .await
         .unwrap_err();
     assert!(matches!(err, TwilioError::Api { .. }));
-    let TwilioError::Api { status, code, body } = err else {
+    let TwilioError::Api {
+        status, code, body, ..
+    } = err
+    else {
         return;
     };
 

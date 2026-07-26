@@ -337,6 +337,7 @@ async fn sensitive_response_parses_structured_twilio_api_error() {
         status,
         code,
         body: public_body,
+        ..
     } = error
     else {
         panic!("expected API error");

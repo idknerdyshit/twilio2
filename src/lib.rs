@@ -241,6 +241,7 @@ mod a2p;
 #[cfg(feature = "sync")]
 mod blocking_client;
 mod bulk_messaging;
+mod bulk_messaging_v1;
 mod channel_senders;
 #[cfg(feature = "async")]
 mod client;
@@ -284,6 +285,7 @@ pub use a2p::{
 #[cfg(feature = "sync")]
 pub use blocking_client::{BlockingTwilioAccount, BlockingTwilioClient};
 pub use bulk_messaging::*;
+pub use bulk_messaging_v1::*;
 #[cfg(feature = "sync")]
 pub use channel_senders::{
     BlockingMessagingV2ChannelSenderResource, BlockingMessagingV2ChannelSendersResource,

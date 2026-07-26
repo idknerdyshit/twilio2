@@ -87,6 +87,30 @@ pub enum BulkMessageRecipientChannel {
     Whatsapp,
 }
 
+/// One messaging address offered for a recipient.
+#[derive(Clone, Serialize)]
+pub struct BulkMessageAddress {
+    address: String,
+    channel: BulkMessageRecipientChannel,
+}
+
+impl BulkMessageAddress {
+    /// Construct a recipient messaging address.
+    #[must_use]
+    pub fn new(address: impl Into<String>, channel: BulkMessageRecipientChannel) -> Self {
+        Self {
+            address: address.into(),
+            channel,
+        }
+    }
+}
+
+impl fmt::Debug for BulkMessageAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        redacted_debug("BulkMessageAddress", f)
+    }
+}
+
 /// Per-recipient personalization variables.
 #[derive(Clone, Default, Serialize)]
 #[serde(transparent)]
@@ -125,21 +149,16 @@ impl fmt::Debug for BulkMessageVariables {
 #[derive(Clone, Serialize)]
 #[serde(untagged)]
 pub enum BulkMessageRecipient {
-    Address {
-        address: String,
-        channel: BulkMessageRecipientChannel,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        variables: Option<BulkMessageVariables>,
-    },
-    ConnectedAddress {
-        #[serde(rename = "connectedAddress")]
-        connected_address: String,
+    Addresses {
+        addresses: Vec<BulkMessageAddress>,
         #[serde(skip_serializing_if = "Option::is_none")]
         variables: Option<BulkMessageVariables>,
     },
     Profile {
         #[serde(rename = "profileId")]
         profile_id: String,
+        #[serde(rename = "memoryStoreId")]
+        memory_store_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         variables: Option<BulkMessageVariables>,
     },
@@ -148,28 +167,25 @@ pub enum BulkMessageRecipient {
 impl BulkMessageRecipient {
     /// Construct an address recipient.
     #[must_use]
-    pub fn address(address: impl Into<String>, channel: BulkMessageRecipientChannel) -> Self {
-        Self::Address {
-            address: address.into(),
-            channel,
+    pub fn addresses(addresses: impl IntoIterator<Item = BulkMessageAddress>) -> Self {
+        Self::Addresses {
+            addresses: addresses.into_iter().collect(),
             variables: None,
         }
     }
 
-    /// Construct a connected-address recipient.
+    /// Construct a recipient with one address.
     #[must_use]
-    pub fn connected_address(id: impl Into<String>) -> Self {
-        Self::ConnectedAddress {
-            connected_address: id.into(),
-            variables: None,
-        }
+    pub fn address(address: impl Into<String>, channel: BulkMessageRecipientChannel) -> Self {
+        Self::addresses([BulkMessageAddress::new(address, channel)])
     }
 
     /// Construct a Twilio Profile recipient.
     #[must_use]
-    pub fn profile(profile_id: impl Into<String>) -> Self {
+    pub fn profile(profile_id: impl Into<String>, memory_store_id: impl Into<String>) -> Self {
         Self::Profile {
             profile_id: profile_id.into(),
+            memory_store_id: memory_store_id.into(),
             variables: None,
         }
     }
@@ -178,37 +194,38 @@ impl BulkMessageRecipient {
     #[must_use]
     pub fn variables(mut self, value: BulkMessageVariables) -> Self {
         match &mut self {
-            Self::Address { variables, .. }
-            | Self::ConnectedAddress { variables, .. }
-            | Self::Profile { variables, .. } => *variables = Some(value),
+            Self::Addresses { variables, .. } | Self::Profile { variables, .. } => {
+                *variables = Some(value);
+            }
         }
         self
     }
 
     fn validate(&self) -> Result<(), TwilioError> {
         match self {
-            Self::Address {
-                address, variables, ..
-            } => {
-                non_empty(address, "recipient address")?;
-                if let Some(variables) = variables {
-                    variables.validate()?;
-                }
-            }
-            Self::ConnectedAddress {
-                connected_address,
+            Self::Addresses {
+                addresses,
                 variables,
             } => {
-                non_empty(connected_address, "connected address")?;
+                if !(1..=10).contains(&addresses.len()) {
+                    return Err(TwilioError::InvalidRequest(
+                        "recipient addresses must contain between 1 and 10 items".to_owned(),
+                    ));
+                }
+                for address in addresses {
+                    non_empty(&address.address, "recipient address")?;
+                }
                 if let Some(variables) = variables {
                     variables.validate()?;
                 }
             }
             Self::Profile {
                 profile_id,
+                memory_store_id,
                 variables,
             } => {
                 validate_id(profile_id, "mem_profile_", "profile ID")?;
+                validate_id(memory_store_id, "mem_store_", "memory store ID")?;
                 if let Some(variables) = variables {
                     variables.validate()?;
                 }
@@ -239,10 +256,8 @@ pub enum BulkMessageSender {
     SenderPool {
         #[serde(rename = "senderPoolId")]
         sender_pool_id: String,
-        #[serde(skip_serializing_if = "Vec::is_empty", rename = "channelFilter")]
-        channel_filter: Vec<BulkMessageChannel>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        priority: Option<u32>,
+        channels: Option<crate::BulkSenderChannelControls>,
     },
 }
 
@@ -269,28 +284,15 @@ impl BulkMessageSender {
     pub fn sender_pool_id(sender_pool_id: impl Into<String>) -> Self {
         Self::SenderPool {
             sender_pool_id: sender_pool_id.into(),
-            channel_filter: Vec::new(),
-            priority: None,
+            channels: None,
         }
     }
 
-    /// Restrict a Sender Pool to ordered channels.
+    /// Apply channel filtering and priority controls to a Sender Pool.
     #[must_use]
-    pub fn channel_filter(
-        mut self,
-        channels: impl IntoIterator<Item = BulkMessageChannel>,
-    ) -> Self {
-        if let Self::SenderPool { channel_filter, .. } = &mut self {
-            *channel_filter = channels.into_iter().collect();
-        }
-        self
-    }
-
-    /// Set Sender Pool priority.
-    #[must_use]
-    pub fn priority(mut self, value: u32) -> Self {
-        if let Self::SenderPool { priority, .. } = &mut self {
-            *priority = Some(value);
+    pub fn channels(mut self, value: crate::BulkSenderChannelControls) -> Self {
+        if let Self::SenderPool { channels, .. } = &mut self {
+            *channels = Some(value);
         }
         self
     }
@@ -301,23 +303,11 @@ impl BulkMessageSender {
             Self::SenderId { sender_id } => validate_id(sender_id, "comms_sender_", "sender ID"),
             Self::SenderPool {
                 sender_pool_id,
-                channel_filter,
-                priority,
+                channels,
             } => {
                 validate_id(sender_pool_id, "comms_senderpool_", "sender pool ID")?;
-                let unique: BTreeSet<_> = channel_filter
-                    .iter()
-                    .map(|channel| channel.wire())
-                    .collect();
-                if unique.len() != channel_filter.len() {
-                    return Err(TwilioError::InvalidRequest(
-                        "sender pool channel filters must be unique".to_owned(),
-                    ));
-                }
-                if priority.is_some_and(|value| value > 100) {
-                    return Err(TwilioError::InvalidRequest(
-                        "sender pool priority must be between 0 and 100".to_owned(),
-                    ));
+                if let Some(channels) = channels {
+                    channels.validate()?;
                 }
                 Ok(())
             }
@@ -360,7 +350,6 @@ impl fmt::Debug for BulkMessageMedia {
 pub enum BulkMessageInlineModule {
     Sms { sms: BulkMessageSmsModule },
     Rcs { rcs: BulkMessageRcsModule },
-    Whatsapp { whatsapp: BulkMessageWhatsappModule },
 }
 
 impl BulkMessageInlineModule {
@@ -376,17 +365,10 @@ impl BulkMessageInlineModule {
         Self::Rcs { rcs: module }
     }
 
-    /// Wrap a `WhatsApp` module.
-    #[must_use]
-    pub fn whatsapp(module: BulkMessageWhatsappModule) -> Self {
-        Self::Whatsapp { whatsapp: module }
-    }
-
     fn validate(&self) -> Result<(), TwilioError> {
         match self {
             Self::Sms { sms } => sms.validate(),
             Self::Rcs { rcs } => rcs.validate(),
-            Self::Whatsapp { whatsapp } => whatsapp.validate(),
         }
     }
 }
@@ -400,18 +382,51 @@ impl fmt::Debug for BulkMessageInlineModule {
 /// Inline SMS content.
 #[derive(Clone, Serialize)]
 pub struct BulkMessageSmsModule {
-    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    media: Vec<BulkMessageMedia>,
 }
 
 impl BulkMessageSmsModule {
     /// Construct inline SMS text.
     #[must_use]
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into() }
+        Self {
+            text: Some(text.into()),
+            media: Vec::new(),
+        }
+    }
+
+    /// Construct inline MMS media.
+    #[must_use]
+    pub fn media(media: impl IntoIterator<Item = BulkMessageMedia>) -> Self {
+        Self {
+            text: None,
+            media: media.into_iter().collect(),
+        }
+    }
+
+    /// Add MMS media to inline SMS text.
+    #[must_use]
+    pub fn with_media(mut self, media: impl IntoIterator<Item = BulkMessageMedia>) -> Self {
+        self.media = media.into_iter().collect();
+        self
     }
 
     fn validate(&self) -> Result<(), TwilioError> {
-        non_empty(&self.text, "SMS text")
+        if self.text.is_none() && self.media.is_empty() {
+            return Err(TwilioError::InvalidRequest(
+                "SMS content must include text or media".to_owned(),
+            ));
+        }
+        if let Some(text) = &self.text {
+            non_empty(text, "SMS text")?;
+        }
+        for media in &self.media {
+            non_empty(&media.url, "SMS media URL")?;
+        }
+        Ok(())
     }
 }
 
@@ -427,6 +442,13 @@ impl fmt::Debug for BulkMessageSmsModule {
 pub enum BulkMessageRcsModule {
     Text {
         text: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        suggestions: Vec<BulkMessageSuggestion>,
+    },
+    Media {
+        media: BulkMessageRcsMedia,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        suggestions: Vec<BulkMessageSuggestion>,
     },
     RichCard {
         #[serde(rename = "richCard")]
@@ -438,7 +460,31 @@ impl BulkMessageRcsModule {
     /// Construct RCS text.
     #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
-        Self::Text { text: text.into() }
+        Self::Text {
+            text: text.into(),
+            suggestions: Vec::new(),
+        }
+    }
+
+    /// Construct RCS media.
+    #[must_use]
+    pub fn media(media: BulkMessageRcsMedia) -> Self {
+        Self::Media {
+            media,
+            suggestions: Vec::new(),
+        }
+    }
+
+    /// Add an RCS suggestion to text or media content.
+    #[must_use]
+    pub fn suggestion(mut self, value: BulkMessageSuggestion) -> Self {
+        match &mut self {
+            Self::Text { suggestions, .. } | Self::Media { suggestions, .. } => {
+                suggestions.push(value);
+            }
+            Self::RichCard { .. } => {}
+        }
+        self
     }
 
     /// Construct an RCS rich card.
@@ -449,10 +495,95 @@ impl BulkMessageRcsModule {
 
     fn validate(&self) -> Result<(), TwilioError> {
         match self {
-            Self::Text { text } => non_empty(text, "RCS text"),
+            Self::Text { text, suggestions } => {
+                non_empty(text, "RCS text")?;
+                validate_rcs_suggestions(suggestions, 11)
+            }
+            Self::Media { media, suggestions } => {
+                media.validate()?;
+                validate_rcs_suggestions(suggestions, 11)
+            }
             Self::RichCard { rich_card } => rich_card.validate(),
         }
     }
+}
+
+/// Inline RCS media.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkMessageRcsMedia {
+    content_info: BulkMessageRcsContentInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    height: Option<BulkMessageRcsMediaHeight>,
+}
+
+impl BulkMessageRcsMedia {
+    /// Construct RCS media from a public file URL.
+    #[must_use]
+    pub fn new(file_url: impl Into<String>) -> Self {
+        Self {
+            content_info: BulkMessageRcsContentInfo {
+                file_url: file_url.into(),
+                thumbnail_url: None,
+                force_refresh: None,
+            },
+            height: None,
+        }
+    }
+
+    /// Set a thumbnail URL.
+    #[must_use]
+    pub fn thumbnail_url(mut self, value: impl Into<String>) -> Self {
+        self.content_info.thumbnail_url = Some(value.into());
+        self
+    }
+
+    /// Force Twilio to refresh cached media.
+    #[must_use]
+    pub fn force_refresh(mut self, value: bool) -> Self {
+        self.content_info.force_refresh = Some(value);
+        self
+    }
+
+    /// Set the displayed media height.
+    #[must_use]
+    pub fn height(mut self, value: BulkMessageRcsMediaHeight) -> Self {
+        self.height = Some(value);
+        self
+    }
+
+    fn validate(&self) -> Result<(), TwilioError> {
+        non_empty(&self.content_info.file_url, "RCS media file URL")?;
+        if let Some(value) = &self.content_info.thumbnail_url {
+            non_empty(value, "RCS media thumbnail URL")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for BulkMessageRcsMedia {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        redacted_debug("BulkMessageRcsMedia", f)
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkMessageRcsContentInfo {
+    file_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thumbnail_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    force_refresh: Option<bool>,
+}
+
+/// RCS media display height.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum BulkMessageRcsMediaHeight {
+    Tall,
+    Medium,
+    Short,
 }
 
 impl fmt::Debug for BulkMessageRcsModule {
@@ -464,13 +595,8 @@ impl fmt::Debug for BulkMessageRcsModule {
 /// An RCS rich card.
 #[derive(Clone, Serialize)]
 pub struct BulkMessageRichCard {
-    title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "mediaUrl")]
-    media_url: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    suggestions: Vec<BulkMessageSuggestion>,
+    #[serde(rename = "standaloneCard")]
+    standalone_card: BulkMessageStandaloneCard,
 }
 
 impl BulkMessageRichCard {
@@ -478,49 +604,91 @@ impl BulkMessageRichCard {
     #[must_use]
     pub fn new(title: impl Into<String>) -> Self {
         Self {
-            title: title.into(),
-            description: None,
-            media_url: None,
-            suggestions: Vec::new(),
+            standalone_card: BulkMessageStandaloneCard {
+                card_orientation: None,
+                thumbnail_image_alignment: None,
+                card_content: BulkMessageCardContent {
+                    title: Some(title.into()),
+                    description: None,
+                    media: None,
+                    suggestions: Vec::new(),
+                },
+            },
         }
     }
 
     /// Set the card description.
     #[must_use]
     pub fn description(mut self, value: impl Into<String>) -> Self {
-        self.description = Some(value.into());
+        self.standalone_card.card_content.description = Some(value.into());
         self
     }
 
     /// Set card media.
     #[must_use]
-    pub fn media_url(mut self, value: impl Into<String>) -> Self {
-        self.media_url = Some(value.into());
+    pub fn media(mut self, value: BulkMessageRcsMedia) -> Self {
+        self.standalone_card.card_content.media = Some(value);
         self
     }
 
     /// Add an interaction suggestion.
     #[must_use]
     pub fn suggestion(mut self, value: BulkMessageSuggestion) -> Self {
-        self.suggestions.push(value);
+        self.standalone_card.card_content.suggestions.push(value);
         self
     }
 
     fn validate(&self) -> Result<(), TwilioError> {
-        non_empty(&self.title, "RCS rich card title")?;
-        if self.suggestions.len() > 4 {
-            return Err(TwilioError::InvalidRequest(
-                "RCS rich cards support at most 4 suggestions".to_owned(),
-            ));
+        let content = &self.standalone_card.card_content;
+        if let Some(title) = &content.title {
+            non_empty(title, "RCS rich card title")?;
         }
-        for suggestion in &self.suggestions {
-            suggestion.validate()?;
+        if let Some(description) = &content.description {
+            non_empty(description, "RCS rich card description")?;
         }
-        if let Some(value) = &self.media_url {
-            non_empty(value, "RCS media URL")?;
+        if let Some(media) = &content.media {
+            media.validate()?;
         }
-        Ok(())
+        validate_rcs_suggestions(&content.suggestions, 4)
     }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkMessageStandaloneCard {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    card_orientation: Option<BulkMessageCardOrientation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thumbnail_image_alignment: Option<BulkMessageThumbnailAlignment>,
+    card_content: BulkMessageCardContent,
+}
+
+#[derive(Clone, Serialize)]
+struct BulkMessageCardContent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    media: Option<BulkMessageRcsMedia>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    suggestions: Vec<BulkMessageSuggestion>,
+}
+
+/// Standalone RCS card orientation.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum BulkMessageCardOrientation {
+    Horizontal,
+    Vertical,
+}
+
+/// Thumbnail alignment for a horizontal standalone RCS card.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum BulkMessageThumbnailAlignment {
+    Left,
+    Right,
 }
 
 impl fmt::Debug for BulkMessageRichCard {
@@ -533,16 +701,8 @@ impl fmt::Debug for BulkMessageRichCard {
 #[derive(Clone, Serialize)]
 #[serde(untagged)]
 pub enum BulkMessageSuggestion {
-    Reply {
-        reply: BulkMessageAction,
-    },
-    OpenUrl {
-        #[serde(rename = "openUrl")]
-        open_url: BulkMessageAction,
-    },
-    Dial {
-        dial: BulkMessageAction,
-    },
+    Reply { reply: BulkMessageReply },
+    Action { action: BulkMessageSuggestedAction },
 }
 
 impl BulkMessageSuggestion {
@@ -550,31 +710,102 @@ impl BulkMessageSuggestion {
     #[must_use]
     pub fn reply(label: impl Into<String>, value: impl Into<String>) -> Self {
         Self::Reply {
-            reply: BulkMessageAction::new(label, value),
+            reply: BulkMessageReply {
+                text: label.into(),
+                postback_data: value.into(),
+            },
         }
     }
 
     /// Construct an open-URL action.
     #[must_use]
     pub fn open_url(label: impl Into<String>, url: impl Into<String>) -> Self {
-        Self::OpenUrl {
-            open_url: BulkMessageAction::new(label, url),
+        let url = url.into();
+        Self::open_url_action(label, url.clone(), url)
+    }
+
+    /// Construct an open-URL action with explicit postback data.
+    #[must_use]
+    pub fn open_url_action(
+        text: impl Into<String>,
+        postback_data: impl Into<String>,
+        url: impl Into<String>,
+    ) -> Self {
+        Self::Action {
+            action: BulkMessageSuggestedAction::OpenUrl {
+                text: text.into(),
+                postback_data: postback_data.into(),
+                open_url_action: BulkMessageOpenUrlAction { url: url.into() },
+            },
         }
     }
 
     /// Construct a dial action.
     #[must_use]
     pub fn dial(label: impl Into<String>, number: impl Into<String>) -> Self {
-        Self::Dial {
-            dial: BulkMessageAction::new(label, number),
+        let number = number.into();
+        Self::Action {
+            action: BulkMessageSuggestedAction::Dial {
+                text: label.into(),
+                postback_data: number.clone(),
+                dial_action: BulkMessageDialAction {
+                    phone_number: number,
+                },
+            },
+        }
+    }
+
+    /// Construct a view-location action.
+    #[must_use]
+    pub fn view_location(
+        text: impl Into<String>,
+        postback_data: impl Into<String>,
+        action: BulkMessageViewLocationAction,
+    ) -> Self {
+        Self::Action {
+            action: BulkMessageSuggestedAction::ViewLocation {
+                text: text.into(),
+                postback_data: postback_data.into(),
+                view_location_action: action,
+            },
+        }
+    }
+
+    /// Construct a create-calendar-event action.
+    #[must_use]
+    pub fn create_calendar_event(
+        text: impl Into<String>,
+        postback_data: impl Into<String>,
+        action: BulkMessageCalendarAction,
+    ) -> Self {
+        Self::Action {
+            action: BulkMessageSuggestedAction::CreateCalendarEvent {
+                text: text.into(),
+                postback_data: postback_data.into(),
+                create_calendar_event_action: action,
+            },
+        }
+    }
+
+    /// Construct a share-location action.
+    #[must_use]
+    pub fn share_location(text: impl Into<String>, postback_data: impl Into<String>) -> Self {
+        Self::Action {
+            action: BulkMessageSuggestedAction::ShareLocation {
+                text: text.into(),
+                postback_data: postback_data.into(),
+                share_location_action: BulkMessageShareLocationAction {},
+            },
         }
     }
 
     fn validate(&self) -> Result<(), TwilioError> {
         match self {
-            Self::Reply { reply } => reply.validate(),
-            Self::OpenUrl { open_url } => open_url.validate(),
-            Self::Dial { dial } => dial.validate(),
+            Self::Reply { reply } => {
+                non_empty(&reply.text, "reply text")?;
+                non_empty(&reply.postback_data, "reply postback data")
+            }
+            Self::Action { action } => action.validate(),
         }
     }
 }
@@ -586,99 +817,253 @@ impl fmt::Debug for BulkMessageSuggestion {
 }
 
 #[derive(Clone, Serialize)]
-pub struct BulkMessageAction {
-    label: String,
-    value: String,
+#[serde(rename_all = "camelCase")]
+pub struct BulkMessageReply {
+    text: String,
+    postback_data: String,
 }
 
-impl BulkMessageAction {
-    fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            value: value.into(),
-        }
-    }
-
-    fn validate(&self) -> Result<(), TwilioError> {
-        non_empty(&self.label, "action label")?;
-        non_empty(&self.value, "action value")
-    }
-}
-
-/// A typed `WhatsApp` text, media, or location module.
 #[derive(Clone, Serialize)]
 #[serde(untagged)]
-pub enum BulkMessageWhatsappModule {
-    Text { text: String },
-    Media { media: BulkMessageWhatsappMedia },
-    Location { location: BulkMessageLocation },
+pub enum BulkMessageSuggestedAction {
+    OpenUrl {
+        text: String,
+        #[serde(rename = "postbackData")]
+        postback_data: String,
+        #[serde(rename = "openUrlAction")]
+        open_url_action: BulkMessageOpenUrlAction,
+    },
+    Dial {
+        text: String,
+        #[serde(rename = "postbackData")]
+        postback_data: String,
+        #[serde(rename = "dialAction")]
+        dial_action: BulkMessageDialAction,
+    },
+    ViewLocation {
+        text: String,
+        #[serde(rename = "postbackData")]
+        postback_data: String,
+        #[serde(rename = "viewLocationAction")]
+        view_location_action: BulkMessageViewLocationAction,
+    },
+    CreateCalendarEvent {
+        text: String,
+        #[serde(rename = "postbackData")]
+        postback_data: String,
+        #[serde(rename = "createCalendarEventAction")]
+        create_calendar_event_action: BulkMessageCalendarAction,
+    },
+    ShareLocation {
+        text: String,
+        #[serde(rename = "postbackData")]
+        postback_data: String,
+        #[serde(rename = "shareLocationAction")]
+        share_location_action: BulkMessageShareLocationAction,
+    },
 }
 
-impl BulkMessageWhatsappModule {
-    /// Construct `WhatsApp` text.
-    #[must_use]
-    pub fn text(text: impl Into<String>) -> Self {
-        Self::Text { text: text.into() }
-    }
-
-    /// Construct `WhatsApp` media.
-    #[must_use]
-    pub fn media(url: impl Into<String>) -> Self {
-        Self::Media {
-            media: BulkMessageWhatsappMedia { url: url.into() },
-        }
-    }
-
-    /// Construct a `WhatsApp` location.
-    #[must_use]
-    pub fn location(latitude: f64, longitude: f64) -> Self {
-        Self::Location {
-            location: BulkMessageLocation {
-                latitude,
-                longitude,
-                name: None,
-                address: None,
-            },
-        }
-    }
-
+impl BulkMessageSuggestedAction {
     fn validate(&self) -> Result<(), TwilioError> {
         match self {
-            Self::Text { text } => non_empty(text, "WhatsApp text"),
-            Self::Media { media } => non_empty(&media.url, "WhatsApp media URL"),
-            Self::Location { location } => {
-                if !(-90.0..=90.0).contains(&location.latitude)
-                    || !(-180.0..=180.0).contains(&location.longitude)
-                {
-                    return Err(TwilioError::InvalidRequest(
-                        "WhatsApp location coordinates are out of range".to_owned(),
-                    ));
-                }
-                Ok(())
+            Self::OpenUrl {
+                text,
+                postback_data,
+                open_url_action,
+            } => {
+                non_empty(text, "action text")?;
+                non_empty(postback_data, "action postback data")?;
+                non_empty(&open_url_action.url, "action URL")
+            }
+            Self::Dial {
+                text,
+                postback_data,
+                dial_action,
+            } => {
+                non_empty(text, "action text")?;
+                non_empty(postback_data, "action postback data")?;
+                non_empty(&dial_action.phone_number, "action phone number")
+            }
+            Self::ViewLocation {
+                text,
+                postback_data,
+                view_location_action,
+            } => {
+                non_empty(text, "action text")?;
+                non_empty(postback_data, "action postback data")?;
+                view_location_action.validate()
+            }
+            Self::CreateCalendarEvent {
+                text,
+                postback_data,
+                create_calendar_event_action,
+            } => {
+                non_empty(text, "action text")?;
+                non_empty(postback_data, "action postback data")?;
+                create_calendar_event_action.validate()
+            }
+            Self::ShareLocation {
+                text,
+                postback_data,
+                ..
+            } => {
+                non_empty(text, "action text")?;
+                non_empty(postback_data, "action postback data")
             }
         }
     }
 }
 
-impl fmt::Debug for BulkMessageWhatsappModule {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        redacted_debug("BulkMessageWhatsappModule", f)
-    }
-}
-
 #[derive(Clone, Serialize)]
-pub struct BulkMessageWhatsappMedia {
+pub struct BulkMessageOpenUrlAction {
     url: String,
 }
 
 #[derive(Clone, Serialize)]
-pub struct BulkMessageLocation {
+#[serde(rename_all = "camelCase")]
+pub struct BulkMessageDialAction {
+    phone_number: String,
+}
+
+/// Coordinates used by an RCS view-location action.
+#[derive(Clone, Copy, Serialize)]
+pub struct BulkMessageCoordinates {
     latitude: f64,
     longitude: f64,
+}
+
+impl BulkMessageCoordinates {
+    /// Construct geographic coordinates.
+    #[must_use]
+    pub fn new(latitude: f64, longitude: f64) -> Self {
+        Self {
+            latitude,
+            longitude,
+        }
+    }
+}
+
+/// A view-location action, using coordinates or a search query.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkMessageViewLocationAction {
     #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
+    lat_long: Option<BulkMessageCoordinates>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    address: Option<String>,
+    label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    query: Option<String>,
+}
+
+impl BulkMessageViewLocationAction {
+    /// Construct a coordinate-based location.
+    #[must_use]
+    pub fn coordinates(latitude: f64, longitude: f64) -> Self {
+        Self {
+            lat_long: Some(BulkMessageCoordinates::new(latitude, longitude)),
+            label: None,
+            query: None,
+        }
+    }
+
+    /// Construct a location search query.
+    #[must_use]
+    pub fn query(value: impl Into<String>) -> Self {
+        Self {
+            lat_long: None,
+            label: None,
+            query: Some(value.into()),
+        }
+    }
+
+    /// Set the coordinate pin label.
+    #[must_use]
+    pub fn label(mut self, value: impl Into<String>) -> Self {
+        self.label = Some(value.into());
+        self
+    }
+
+    fn validate(&self) -> Result<(), TwilioError> {
+        if self.lat_long.is_some() == self.query.is_some() {
+            return Err(TwilioError::InvalidRequest(
+                "view-location action requires exactly one of coordinates or query".to_owned(),
+            ));
+        }
+        if let Some(coordinates) = self.lat_long
+            && (!(-90.0..=90.0).contains(&coordinates.latitude)
+                || !(-180.0..=180.0).contains(&coordinates.longitude))
+        {
+            return Err(TwilioError::InvalidRequest(
+                "view-location coordinates are out of range".to_owned(),
+            ));
+        }
+        if let Some(query) = &self.query {
+            non_empty(query, "view-location query")?;
+        }
+        Ok(())
+    }
+}
+
+/// An RCS create-calendar-event action.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkMessageCalendarAction {
+    start_time: String,
+    end_time: String,
+    title: String,
+    description: String,
+}
+
+impl BulkMessageCalendarAction {
+    /// Construct a calendar event.
+    #[must_use]
+    pub fn new(
+        start_time: impl Into<String>,
+        end_time: impl Into<String>,
+        title: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            start_time: start_time.into(),
+            end_time: end_time.into(),
+            title: title.into(),
+            description: description.into(),
+        }
+    }
+
+    fn validate(&self) -> Result<(), TwilioError> {
+        let start = OffsetDateTime::parse(&self.start_time, &Rfc3339).map_err(|_| {
+            TwilioError::InvalidRequest("calendar start time must be RFC 3339".to_owned())
+        })?;
+        let end = OffsetDateTime::parse(&self.end_time, &Rfc3339).map_err(|_| {
+            TwilioError::InvalidRequest("calendar end time must be RFC 3339".to_owned())
+        })?;
+        if end <= start {
+            return Err(TwilioError::InvalidRequest(
+                "calendar end time must be later than start time".to_owned(),
+            ));
+        }
+        non_empty(&self.title, "calendar title")?;
+        non_empty(&self.description, "calendar description")
+    }
+}
+
+/// Empty payload required by the RCS share-location action.
+#[derive(Clone, Copy, Default, Serialize)]
+pub struct BulkMessageShareLocationAction {}
+
+fn validate_rcs_suggestions(
+    suggestions: &[BulkMessageSuggestion],
+    maximum: usize,
+) -> Result<(), TwilioError> {
+    if suggestions.len() > maximum {
+        return Err(TwilioError::InvalidRequest(format!(
+            "RCS content supports at most {maximum} suggestions"
+        )));
+    }
+    suggestions
+        .iter()
+        .try_for_each(BulkMessageSuggestion::validate)
 }
 
 /// Message content. Variants cannot be combined on the wire.
@@ -691,13 +1076,12 @@ pub enum BulkMessageContent {
         #[serde(skip_serializing_if = "Vec::is_empty")]
         media: Vec<BulkMessageMedia>,
     },
-    ContentSid {
-        #[serde(rename = "contentSid")]
-        content_sid: String,
+    ContentId {
+        #[serde(rename = "contentId")]
+        content_id: String,
     },
     Inline {
-        #[serde(rename = "channelModules")]
-        channel_modules: Vec<BulkMessageInlineModule>,
+        modules: Vec<BulkMessageInlineModule>,
     },
 }
 
@@ -734,9 +1118,9 @@ impl BulkMessageContent {
 
     /// Select a Content API template SID.
     #[must_use]
-    pub fn content_sid(value: impl Into<String>) -> Self {
-        Self::ContentSid {
-            content_sid: value.into(),
+    pub fn content_id(value: impl Into<String>) -> Self {
+        Self::ContentId {
+            content_id: value.into(),
         }
     }
 
@@ -744,7 +1128,7 @@ impl BulkMessageContent {
     #[must_use]
     pub fn inline(modules: impl IntoIterator<Item = BulkMessageInlineModule>) -> Self {
         Self::Inline {
-            channel_modules: modules.into_iter().collect(),
+            modules: modules.into_iter().collect(),
         }
     }
 
@@ -769,12 +1153,12 @@ impl BulkMessageContent {
                 }
                 Ok(())
             }
-            Self::ContentSid { content_sid } => {
-                if content_sid.len() == 34
-                    && content_sid.starts_with("HX")
-                    && content_sid[2..]
+            Self::ContentId { content_id } => {
+                if (28..=36).contains(&content_id.len())
+                    && content_id.starts_with("HX")
+                    && content_id[2..]
                         .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit())
+                        .all(|byte| byte.is_ascii_alphanumeric())
                 {
                     Ok(())
                 } else {
@@ -783,18 +1167,17 @@ impl BulkMessageContent {
                     ))
                 }
             }
-            Self::Inline { channel_modules } => {
-                if channel_modules.is_empty() {
+            Self::Inline { modules } => {
+                if !(1..=4).contains(&modules.len()) {
                     return Err(TwilioError::InvalidRequest(
-                        "inline channel modules must not be empty".to_owned(),
+                        "inline modules must contain between 1 and 4 items".to_owned(),
                     ));
                 }
                 let mut kinds = BTreeSet::new();
-                for module in channel_modules {
+                for module in modules {
                     let kind = match module {
                         BulkMessageInlineModule::Sms { .. } => "SMS",
                         BulkMessageInlineModule::Rcs { .. } => "RCS",
-                        BulkMessageInlineModule::Whatsapp { .. } => "WHATSAPP",
                     };
                     if !kinds.insert(kind) {
                         return Err(TwilioError::InvalidRequest(
@@ -1110,20 +1493,23 @@ where
         .transpose()
 }
 
+fn deserialize_timestamp<'de, D>(deserializer: D) -> Result<OffsetDateTime, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    OffsetDateTime::parse(&value, &Rfc3339).map_err(serde::de::Error::custom)
+}
+
 /// Metadata returned by message list and fetch endpoints.
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BulkMessage {
-    #[serde(default)]
     pub id: Option<String>,
-    #[serde(default)]
     pub from: Option<BulkMessageResponseSender>,
     #[serde(default)]
     pub to: Vec<BulkMessageResponseRecipient>,
-    #[serde(default)]
-    pub status: Option<String>,
-    #[serde(default)]
-    pub content: Option<serde_json::Value>,
+    pub status: Option<crate::BulkMessagingValue>,
     #[serde(default)]
     pub attempts: Vec<BulkMessageAttempt>,
     #[serde(default)]
@@ -1132,6 +1518,8 @@ pub struct BulkMessage {
     pub created_at: Option<OffsetDateTime>,
     #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
     pub updated_at: Option<OffsetDateTime>,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
+    pub scheduled_for: Option<OffsetDateTime>,
     #[serde(default)]
     pub tags: BTreeMap<String, String>,
 }
@@ -1143,11 +1531,30 @@ impl fmt::Debug for BulkMessage {
 }
 
 #[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BulkMessageResponseSender {
-    pub address: Option<String>,
-    pub channel: Option<String>,
-    pub sender_id: Option<String>,
+#[serde(untagged)]
+pub enum BulkMessageResponseSender {
+    Address {
+        address: String,
+        channel: crate::BulkMessagingValue,
+        #[serde(rename = "senderId")]
+        sender_id: String,
+        #[serde(rename = "senderPoolId")]
+        sender_pool_id: Option<String>,
+    },
+    Sender {
+        #[serde(rename = "senderId")]
+        sender_id: String,
+    },
+    SenderPool {
+        #[serde(rename = "senderPoolId")]
+        sender_pool_id: String,
+    },
+    Profile {
+        #[serde(rename = "profileId")]
+        profile_id: String,
+        #[serde(rename = "memoryStoreId")]
+        memory_store_id: String,
+    },
 }
 
 impl fmt::Debug for BulkMessageResponseSender {
@@ -1157,9 +1564,28 @@ impl fmt::Debug for BulkMessageResponseSender {
 }
 
 #[derive(Clone, Deserialize)]
-pub struct BulkMessageResponseRecipient {
-    pub address: Option<String>,
-    pub channel: Option<String>,
+#[serde(untagged)]
+pub enum BulkMessageResponseRecipient {
+    Address {
+        address: String,
+        channel: crate::BulkMessagingValue,
+    },
+    Addresses {
+        addresses: Vec<BulkMessageResponseAddress>,
+    },
+    Profile {
+        #[serde(rename = "profileId")]
+        profile_id: String,
+        #[serde(rename = "memoryStoreId")]
+        memory_store_id: String,
+    },
+}
+
+/// One address in a recipient response.
+#[derive(Clone, Deserialize)]
+pub struct BulkMessageResponseAddress {
+    pub address: String,
+    pub channel: crate::BulkMessagingValue,
 }
 
 impl fmt::Debug for BulkMessageResponseRecipient {
@@ -1205,18 +1631,18 @@ impl fmt::Debug for BulkMessageRelatedResource {
 /// Aggregate operation statistics.
 #[derive(Clone, Default, Deserialize)]
 pub struct BulkMessageOperationStats {
-    pub total: Option<u64>,
-    pub recipients: Option<u64>,
-    pub attempts: Option<u64>,
-    pub scheduled: Option<u64>,
-    pub queued: Option<u64>,
-    pub sent: Option<u64>,
-    pub delivered: Option<u64>,
-    pub read: Option<u64>,
-    pub undelivered: Option<u64>,
-    pub unaddressable: Option<u64>,
-    pub failed: Option<u64>,
-    pub canceled: Option<u64>,
+    pub total: u64,
+    pub recipients: u64,
+    pub attempts: u64,
+    pub scheduled: u64,
+    pub queued: u64,
+    pub sent: u64,
+    pub delivered: u64,
+    pub read: u64,
+    pub undelivered: u64,
+    pub unaddressable: u64,
+    pub failed: u64,
+    pub canceled: u64,
 }
 
 impl fmt::Debug for BulkMessageOperationStats {
@@ -1232,20 +1658,18 @@ impl fmt::Debug for BulkMessageOperationStats {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BulkMessageOperation {
-    pub id: Option<String>,
-    pub status: Option<String>,
-    pub stats: Option<BulkMessageOperationStats>,
-    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
-    pub created_at: Option<OffsetDateTime>,
-    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
-    pub updated_at: Option<OffsetDateTime>,
+    pub id: String,
+    pub status: crate::BulkMessagingValue,
+    pub stats: BulkMessageOperationStats,
+    #[serde(deserialize_with = "deserialize_timestamp")]
+    pub created_at: OffsetDateTime,
+    #[serde(deserialize_with = "deserialize_timestamp")]
+    pub updated_at: OffsetDateTime,
 }
 
 impl BulkMessageOperation {
     fn terminal(&self) -> bool {
-        self.status
-            .as_deref()
-            .is_some_and(|value| matches!(value, "COMPLETED" | "CANCELED"))
+        matches!(self.status.as_str(), "COMPLETED" | "CANCELED")
     }
 }
 
@@ -1263,6 +1687,8 @@ pub struct BulkMessagePage {
     pub messages: Vec<BulkMessage>,
     #[serde(default, alias = "next_token")]
     pub next_page_token: Option<String>,
+    #[serde(default)]
+    pub pagination: crate::BulkMessagingPagination,
 }
 
 impl fmt::Debug for BulkMessagePage {
@@ -1273,7 +1699,7 @@ impl fmt::Debug for BulkMessagePage {
                 "next_page_token",
                 &self.next_page_token.as_ref().map(|_| "<redacted>"),
             )
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -1285,6 +1711,8 @@ pub struct BulkMessageOperationPage {
     pub operations: Vec<BulkMessageOperation>,
     #[serde(default, alias = "next_token")]
     pub next_page_token: Option<String>,
+    #[serde(default)]
+    pub pagination: crate::BulkMessagingPagination,
 }
 
 impl fmt::Debug for BulkMessageOperationPage {
@@ -1295,7 +1723,7 @@ impl fmt::Debug for BulkMessageOperationPage {
                 "next_page_token",
                 &self.next_page_token.as_ref().map(|_| "<redacted>"),
             )
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -1450,6 +1878,18 @@ impl<'a> BulkMessagingV1Resource<'a> {
             account: self.account,
         }
     }
+
+    /// Select the Senders collection.
+    #[must_use]
+    pub fn senders(self) -> crate::BulkSendersResource<'a> {
+        crate::BulkSendersResource::new(self.account)
+    }
+
+    /// Select the Sender Pools collection.
+    #[must_use]
+    pub fn sender_pools(self) -> crate::BulkSenderPoolsResource<'a> {
+        crate::BulkSenderPoolsResource::new(self.account)
+    }
 }
 
 #[cfg(feature = "async")]
@@ -1477,6 +1917,36 @@ impl<'a> BulkMessagesResource<'a> {
             .json_body(&request)?;
         let raw = self.account.send_spec_raw(spec, &[]).await?;
         submission_from_raw(&raw.output, &self.account.client.config.bulk_messaging)
+    }
+
+    /// Seek a Bulk Message by a downstream `SM` or `MM` SID.
+    ///
+    /// The 301 response is never followed automatically. Its target is validated
+    /// against the configured Bulk Messaging origin before credentials are used.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid SID, unsafe redirect metadata, request
+    /// failure, or response decoding failure.
+    pub async fn seek(self, sid: &str) -> Result<BulkMessage, TwilioError> {
+        validate_message_sid(sid)?;
+        let spec = RequestSpec::new(
+            ApiFamily::BulkMessagingV1,
+            Method::GET,
+            ["Messages", "Seek", sid],
+        )
+        .operation("bulk_messages.seek")
+        .accept_status(301);
+        let response = self.account.send_spec_raw(spec, &[sid]).await?;
+        let message_id =
+            seek_message_id(&response.output, &self.account.client.config.bulk_messaging)?;
+        let fetch = RequestSpec::new(
+            ApiFamily::BulkMessagingV1,
+            Method::GET,
+            ["Messages", &message_id],
+        )
+        .operation("bulk_messages.seek.fetch");
+        self.account.send_spec_json(fetch, &[&message_id]).await
     }
 
     /// List one page.
@@ -1542,7 +2012,7 @@ impl<'a> BulkMessagesResource<'a> {
                         .await
                 })
             },
-            |page| (page.messages, page.next_page_token),
+            |page| (page.messages, page.pagination.next.or(page.next_page_token)),
         )
     }
 }
@@ -1627,7 +2097,12 @@ impl<'a> BulkMessageOperationsResource<'a> {
                         .await
                 })
             },
-            |page| (page.operations, page.next_page_token),
+            |page| {
+                (
+                    page.operations,
+                    page.pagination.next.or(page.next_page_token),
+                )
+            },
         )
     }
 }
@@ -1695,6 +2170,52 @@ fn validate_wait(interval: Duration, timeout: Duration) -> Result<(), TwilioErro
     }
 }
 
+fn validate_message_sid(value: &str) -> Result<(), TwilioError> {
+    if value.len() == 34
+        && (value.starts_with("SM") || value.starts_with("MM"))
+        && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        Ok(())
+    } else {
+        Err(TwilioError::InvalidRequest(
+            "message SID has an invalid format".to_owned(),
+        ))
+    }
+}
+
+fn seek_message_id(raw: &crate::common::RawResponse, base: &Url) -> Result<String, TwilioError> {
+    let location = raw
+        .headers
+        .get(http::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            TwilioError::InvalidResponseMetadata("seek location is missing or malformed".to_owned())
+        })?;
+    let url = Url::parse(location).map_err(|_| {
+        TwilioError::InvalidResponseMetadata("seek location is malformed".to_owned())
+    })?;
+    let same_origin = url.scheme() == base.scheme()
+        && url.host_str() == base.host_str()
+        && url.port_or_known_default() == base.port_or_known_default();
+    let prefix = format!("{}v1/Messages/", base.path());
+    let message_id = url.path().strip_prefix(&prefix).ok_or_else(|| {
+        TwilioError::InvalidResponseMetadata(
+            "seek location is outside the configured message resource".to_owned(),
+        )
+    })?;
+    if !same_origin
+        || message_id.contains('/')
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || validate_id(message_id, "comms_message_", "message ID").is_err()
+    {
+        return Err(TwilioError::InvalidResponseMetadata(
+            "seek location is outside the configured message resource".to_owned(),
+        ));
+    }
+    Ok(message_id.to_owned())
+}
+
 // The blocking resource graph intentionally mirrors the async graph.
 #[cfg(feature = "sync")]
 #[derive(Clone, Copy)]
@@ -1729,6 +2250,16 @@ impl<'a> BlockingBulkMessagingV1Resource<'a> {
             account: self.account,
         }
     }
+
+    #[must_use]
+    pub fn senders(self) -> crate::BlockingBulkSendersResource<'a> {
+        crate::BlockingBulkSendersResource::new(self.account)
+    }
+
+    #[must_use]
+    pub fn sender_pools(self) -> crate::BlockingBulkSenderPoolsResource<'a> {
+        crate::BlockingBulkSenderPoolsResource::new(self.account)
+    }
 }
 
 #[cfg(feature = "sync")]
@@ -1755,6 +2286,33 @@ impl<'a> BlockingBulkMessagesResource<'a> {
             .json_body(&request)?;
         let raw = self.account.send_spec_raw(spec, &[])?;
         submission_from_raw(&raw.output, &self.account.client.config.bulk_messaging)
+    }
+
+    /// Seek a message by downstream `SM` or `MM` SID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid SID, unsafe redirect metadata, request
+    /// failure, or response decoding failure.
+    pub fn seek(self, sid: &str) -> Result<BulkMessage, TwilioError> {
+        validate_message_sid(sid)?;
+        let spec = RequestSpec::new(
+            ApiFamily::BulkMessagingV1,
+            Method::GET,
+            ["Messages", "Seek", sid],
+        )
+        .operation("bulk_messages.seek")
+        .accept_status(301);
+        let response = self.account.send_spec_raw(spec, &[sid])?;
+        let message_id =
+            seek_message_id(&response.output, &self.account.client.config.bulk_messaging)?;
+        let fetch = RequestSpec::new(
+            ApiFamily::BulkMessagingV1,
+            Method::GET,
+            ["Messages", &message_id],
+        )
+        .operation("bulk_messages.seek.fetch");
+        self.account.send_spec_json(fetch, &[&message_id])
     }
 
     /// List one page.
@@ -1810,7 +2368,7 @@ impl<'a> BlockingBulkMessagesResource<'a> {
                 self.account
                     .send_spec_json(messages_spec(request.query(token.as_deref())), &[])
             },
-            |page| (page.messages, page.next_page_token),
+            |page| (page.messages, page.pagination.next.or(page.next_page_token)),
         )
     }
 }
@@ -1889,7 +2447,12 @@ impl<'a> BlockingBulkMessageOperationsResource<'a> {
                 self.account
                     .send_spec_json(operations_spec(request.query(token.as_deref())), &[])
             },
-            |page| (page.operations, page.next_page_token),
+            |page| {
+                (
+                    page.operations,
+                    page.pagination.next.or(page.next_page_token),
+                )
+            },
         )
     }
 }

@@ -9,6 +9,7 @@ const OPERATION_ID: &str = "comms_operation_01h9krwprkeee8fzqspvwy6nq8";
 
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
+    // Bulk Messaging is a Public Beta API. This example uses only a local mock.
     let server = HttpsMockServer::start(vec![MockResponse::accepted_json(format!(
         r#"{{"operationId":"{OPERATION_ID}","operationLocation":"__BASE_URL__/v1/Messages/Operations/{OPERATION_ID}"}}"#
     ))])

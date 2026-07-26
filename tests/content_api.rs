@@ -231,7 +231,10 @@ async fn content_routes_report_structured_redacted_api_errors() {
         .fetch()
         .await
         .unwrap_err();
-    let TwilioError::Api { status, code, body } = v1_error else {
+    let TwilioError::Api {
+        status, code, body, ..
+    } = v1_error
+    else {
         panic!("expected Content v1 API error");
     };
     assert_eq!(status, 400);
@@ -247,7 +250,10 @@ async fn content_routes_report_structured_redacted_api_errors() {
         .list(ContentSearchRequest::new())
         .await
         .unwrap_err();
-    let TwilioError::Api { status, code, body } = v2_error else {
+    let TwilioError::Api {
+        status, code, body, ..
+    } = v2_error
+    else {
         panic!("expected Content v2 API error");
     };
     assert_eq!(status, 500);

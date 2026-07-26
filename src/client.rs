@@ -11,8 +11,8 @@ use crate::common::{
     TwilioClientConfig, TwilioConfig, TwilioError, api_error_from_body,
     api_error_from_body_read_error, attempt_error, attempt_response, attempt_span,
     content_page_url_from_base, decode_json_response, endpoint_url_from_base,
-    legacy_page_uri_url_from_base, owned_sensitive_values, pricing_page_url_from_base,
-    read_limited_response_body, transport_error, v1_page_url_from_base,
+    legacy_page_uri_url_from_base, owned_sensitive_values, parse_retry_after,
+    pricing_page_url_from_base, read_limited_response_body, transport_error, v1_page_url_from_base,
     validate_request_spec_headers,
 };
 use crate::content::ContentResource;
@@ -595,12 +595,19 @@ impl TwilioClient {
         sensitive_values: &[&str],
         capture_sensitive_response: bool,
     ) -> ApiErrorRead {
+        let retry_after = parse_retry_after(&headers);
         if capture_sensitive_response {
             return match response.bytes().await {
                 Ok(body) => {
                     let body = body.to_vec();
                     ApiErrorRead {
-                        error: api_error_from_body(status, &body, true, sensitive_values),
+                        error: api_error_from_body(
+                            status,
+                            &body,
+                            true,
+                            retry_after,
+                            sensitive_values,
+                        ),
                         raw_response: Some(RawResponse::new(status, headers, body)),
                         transport_error: None,
                     }
@@ -627,7 +634,13 @@ impl TwilioClient {
             .complete
             .then(|| RawResponse::new(status, headers, limited.body.clone()));
         ApiErrorRead {
-            error: api_error_from_body(status, &limited.body, limited.complete, sensitive_values),
+            error: api_error_from_body(
+                status,
+                &limited.body,
+                limited.complete,
+                retry_after,
+                sensitive_values,
+            ),
             raw_response,
             transport_error: None,
         }

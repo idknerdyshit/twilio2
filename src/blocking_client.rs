@@ -14,9 +14,9 @@ use crate::common::{
     TwilioClientConfig, TwilioConfig, TwilioError, api_error_from_body,
     api_error_from_read_error_message, attempt_error, attempt_response, attempt_span,
     content_page_url_from_base, decode_json_response, endpoint_url_from_base,
-    legacy_page_uri_url_from_base, owned_sensitive_values, pricing_page_url_from_base,
-    read_limited_reader_body, transport_error_from_message, v1_page_url_from_base,
-    validate_request_spec_headers,
+    legacy_page_uri_url_from_base, owned_sensitive_values, parse_retry_after,
+    pricing_page_url_from_base, read_limited_reader_body, transport_error_from_message,
+    v1_page_url_from_base, validate_request_spec_headers,
 };
 use crate::content::BlockingContentResource;
 #[cfg(feature = "sensitive-diagnostics")]
@@ -648,10 +648,11 @@ impl BlockingTwilioClient {
         sensitive_values: &[&str],
         capture_sensitive_response: bool,
     ) -> ApiErrorRead {
+        let retry_after = parse_retry_after(&headers);
         if capture_sensitive_response {
             return match response.body_mut().read_to_vec() {
                 Ok(body) => ApiErrorRead {
-                    error: api_error_from_body(status, &body, true, sensitive_values),
+                    error: api_error_from_body(status, &body, true, retry_after, sensitive_values),
                     raw_response: Some(RawResponse::new(status, headers, body)),
                     transport_error: None,
                 },
@@ -686,7 +687,13 @@ impl BlockingTwilioClient {
             .complete
             .then(|| RawResponse::new(status, headers, limited.body.clone()));
         ApiErrorRead {
-            error: api_error_from_body(status, &limited.body, limited.complete, sensitive_values),
+            error: api_error_from_body(
+                status,
+                &limited.body,
+                limited.complete,
+                retry_after,
+                sensitive_values,
+            ),
             raw_response,
             transport_error: None,
         }

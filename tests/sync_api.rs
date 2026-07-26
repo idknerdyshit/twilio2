@@ -284,7 +284,9 @@ fn pricing_continuation_api_errors_redact_page_url() {
         .unwrap_err();
 
     match err {
-        TwilioError::Api { status, code, body } => {
+        TwilioError::Api {
+            status, code, body, ..
+        } => {
             assert_eq!(status, 400);
             assert_eq!(code, Some(20003));
             assert!(
